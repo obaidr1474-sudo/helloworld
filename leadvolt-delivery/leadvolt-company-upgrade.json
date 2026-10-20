@@ -1,0 +1,10 @@
+{
+  "archive": "leadvolt-company-upgrade.zip",
+  "sha256": "22cf4371b7b07a3baa2b428fbffa8ccd4a7065909d2609cd8f131e4dab797331",
+  "sourceCommit": "8324a2f630ca7528d168d40b7aa35fa05fcaddbf",
+  "files": 144,
+  "automatedChecksPassed": 91,
+  "browserScenariosPassed": 36,
+  "continuation": "leadvolt/NEXT_SESSION.md",
+  "status": "Saved checkpoint; remaining product and live acceptance work documented"
+}

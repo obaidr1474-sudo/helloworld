@@ -1,3 +1,13 @@
+# Latest LeadVolt delivery
+
+[Download the company-controls upgrade](https://github.com/obaidr1474-sudo/helloworld/raw/refs/heads/codex/leadvolt-business-routing/leadvolt-delivery/leadvolt-company-upgrade.zip).
+
+[Read the saved handover and remaining work](../leadvolt/NEXT_SESSION.md). The user requested finalization because credits were exhausted; this preserves the exact continuation point. The source, tests, screenshots, migrations and operator instructions are included. Private environment files, installed dependencies and database backups are excluded.
+
+Final build and 91 automated checks passed. The three browser suites covered 36 scenarios. Dedicated booking-review UI and the live Bayut connector remain pending. Earlier ZIPs are preserved below.
+
+---
+
 # LeadVolt downloads
 
 [Download the latest CRM workflow upgrade](https://github.com/obaidr1474-sudo/helloworld/raw/refs/heads/codex/leadvolt-business-routing/leadvolt-delivery/leadvolt-routing-upgrade.zip).
