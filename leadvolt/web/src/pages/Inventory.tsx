@@ -11,13 +11,13 @@ export function Inventory({ me }: { me: Me }) {
   const canEdit = ['owner', 'admin', 'manager', 'listing_manager'].includes(me.role);
   const load = () => api<any[]>('GET', '/properties').then(setRows).catch((e) => toast(errMsg(e)));
   useEffect(() => { load(); }, []);
-  const open = (p?: any) => setEdit(p ? { id: p.id, reference: p.reference, projectName: p.project_name, community: p.community, propertyType: p.property_type, offeringType: p.offering_type, beds: String(p.beds), areaSqft: p.area_sqft ?? '', price: String(p.price), handover: p.handover ?? '', status: p.status, brochureUrl: p.brochure_url ?? '', permitNumber: p.permit_number ?? '' } : { ...blank });
+  const open = (p?: any) => setEdit(p ? {id:p.id,version:p.version,reference: p.reference, projectName: p.project_name, community: p.community, propertyType: p.property_type, offeringType: p.offering_type, beds: String(p.beds), areaSqft: p.area_sqft ?? '', price: String(p.price), handover: p.handover ?? '', status: p.status, brochureUrl: p.brochure_url ?? '', permitNumber: p.permit_number ?? '' } : { ...blank });
   const save = async () => {
     try {
       const body = { reference: edit.reference || undefined, projectName: edit.projectName, community: edit.community, propertyType: edit.propertyType, offeringType: edit.offeringType,
         beds: Number(edit.beds), areaSqft: edit.areaSqft ? Number(edit.areaSqft) : undefined, price: Number(edit.price), handover: edit.handover || undefined, status: edit.status,
         brochureUrl: edit.brochureUrl || undefined, permitNumber: edit.permitNumber || undefined };
-      await api(edit.id ? 'PUT' : 'POST', edit.id ? `/properties/${edit.id}` : '/properties', body);
+      await api(edit.id ? 'PUT' : 'POST', edit.id ? `/properties/${edit.id}`:'/properties',body,edit.id?{'If-Match':`"${edit.version}"`}:{});
       toast('Property saved'); setEdit(null); load();
     } catch (e) { toast(errMsg(e)); }
   };

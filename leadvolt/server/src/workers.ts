@@ -1,4 +1,6 @@
+import { dispatchQueuedMessages } from './services/delivery.js';
 import type { FastifyBaseLogger } from 'fastify';
+import { assignInternal,loadLead } from './services/leads.js';
 import { withSystem } from './lib/db.js';
 import { emit } from './lib/events.js';
 
@@ -10,24 +12,22 @@ import { emit } from './lib/events.js';
 export async function runSlaSweep(log?: FastifyBaseLogger) {
   return withSystem(async (tx) => {
     const { rows } = await tx.query(
-      `SELECT l.id, l.tenant_id, l.owner_id, l.full_name, (t.settings->>'sla_auto_reassign')::boolean AS auto_reassign
+      `SELECT l.id, l.tenant_id, l.owner_id,l.routing_mode,l.full_name, (t.settings->>'sla_auto_reassign')::boolean AS auto_reassign
          FROM leads l JOIN tenants t ON t.id = l.tenant_id
         WHERE l.first_response_at IS NULL AND l.sla_breached_at IS NULL AND l.deleted_at IS NULL AND l.stage = 'new' AND l.sla_due_at < now()
         ORDER BY l.sla_due_at LIMIT 200 FOR UPDATE OF l SKIP LOCKED`);
     for (const l of rows) {
       await tx.query(`UPDATE leads SET sla_breached_at = now() WHERE id = $1`, [l.id]);
       await emit(tx, l.tenant_id, 'sla.breached', { lead_id: l.id, owner_id: l.owner_id, name: l.full_name });
-      if (l.auto_reassign) {
+      if(l.auto_reassign&&l.routing_mode!=='listing'&&l.owner_id){
         const next = (await tx.query(
-          `SELECT u.id FROM users u WHERE u.tenant_id = $1 AND u.is_active AND u.is_clocked_in AND u.role IN ('agent','manager') AND u.id IS DISTINCT FROM $2
+          `SELECT u.id FROM users u WHERE u.tenant_id = $1 AND u.is_active AND u.is_clocked_in AND u.role IN ('agent','manager') AND (u.capacity_max_open_leads IS NULL OR (SELECT count(*) FROM leads c WHERE c.tenant_id=u.tenant_id AND c.owner_id=u.id AND c.deleted_at IS NULL AND c.stage NOT IN ('lost','booked'))<u.capacity_max_open_leads) AND u.id IS DISTINCT FROM $2
             ORDER BY (SELECT count(*) FROM leads x WHERE x.owner_id = u.id AND x.deleted_at IS NULL AND x.stage NOT IN ('lost','booked')), u.id LIMIT 1`,
           [l.tenant_id, l.owner_id])).rows[0];
         if (next) {
-          await tx.query(`UPDATE leads SET owner_id = $2, sla_breached_at = NULL, sla_due_at = now() + interval '10 minutes', updated_at = now(), version = version + 1 WHERE id = $1`, [l.id, next.id]);
-          await tx.query(`INSERT INTO lead_assignments (tenant_id, lead_id, from_user_id, to_user_id, reason) VALUES ($1,$2,$3,$4,'sla_breach')`, [l.tenant_id, l.id, l.owner_id, next.id]);
-          await tx.query(`INSERT INTO interactions (tenant_id, lead_id, type, direction, summary, payload) VALUES ($1,$2,'assignment','internal','Reassigned after first-response SLA breach',$3)`,
-            [l.tenant_id, l.id, { from: l.owner_id, to: next.id }]);
-          await emit(tx, l.tenant_id, 'lead.assigned', { lead_id: l.id, owner_id: next.id, user_ids: [l.owner_id, next.id].filter(Boolean), reason: 'sla_breach' });
+          const actor={id:null,tenantId:l.tenant_id,role:'system'};
+          await assignInternal(tx,actor,await loadLead(tx,l.tenant_id,l.id),next.id,'sla_breach');
+
         }
       }
     }
@@ -43,5 +43,6 @@ export async function runSlaSweep(log?: FastifyBaseLogger) {
 
 export function startWorkers(intervalMs: number, log: FastifyBaseLogger) {
   const timer = setInterval(() => runSlaSweep(log).catch((err) => log.error({ err }, 'sla sweep failed')), intervalMs);
-  return () => clearInterval(timer);
+  let sending=false;const deliveries=setInterval(()=>{if(sending)return;sending=true;dispatchQueuedMessages().catch(err=>log.error({err},'message delivery worker failed')).finally(()=>{sending=false;});},2000);
+  return ()=>{clearInterval(timer);clearInterval(deliveries);};
 }

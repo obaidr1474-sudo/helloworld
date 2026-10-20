@@ -17,3 +17,21 @@ export const dt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString(u
 export function toLocalInput(d: Date) { const p = (n: number) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; }
 export const SOURCES: Record<string, string> = { bayut: 'Bayut', property_finder: 'Property Finder', dubizzle: 'Dubizzle', facebook: 'Facebook', google: 'Google Ads', website: 'Website', ivr: 'IVR call', whatsapp: 'WhatsApp', channel_partner: 'Channel partner', referral: 'Referral', walk_in: 'Walk-in', other: 'Other' };
 export const STAGE_LABEL: Record<string, string> = { new: 'New', contacted: 'Contacted', meeting: 'Meeting', site_visit: 'Site visit', eoi: 'EOI', booked: 'Booked', lost: 'Closed lost' };
+
+export function dateInZone(iso:string,zone='Asia/Dubai'){
+  const parts=new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(iso));
+  const get=(name:string)=>parts.find(p=>p.type===name)!.value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+export function dateStartInZone(date:string,zone='Asia/Dubai'){
+  const [y,m,d]=date.split('-').map(Number),target=Date.UTC(y,m-1,d);
+  const formatter=new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+  let instant=target;
+  for(let n=0;n<3;n++){
+    const parts=formatter.formatToParts(new Date(instant)),v=(k:string)=>Number(parts.find(p=>p.type===k)!.value);
+    const offset=Date.UTC(v('year'),v('month')-1,v('day'),v('hour'),v('minute'),v('second'))-instant;
+    const adjusted=target-offset;if(adjusted===instant)break;instant=adjusted;
+  }
+  return new Date(instant).toISOString();
+}
+export function nextDate(date:string){const d=new Date(date+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+1);return d.toISOString().slice(0,10);}

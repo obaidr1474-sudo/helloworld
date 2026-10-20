@@ -1,8 +1,8 @@
 import type { Tx } from './db.js';
 
 export type DomainEventType =
-  | 'lead.created' | 'lead.updated' | 'lead.stage_changed' | 'lead.assigned' | 'lead.reenquired'
-  | 'interaction.created' | 'message.received' | 'message.sent' | 'task.created' | 'task.updated'
+  | 'listing.mapping_changed' | 'routing.exception' | 'auth.revoked' | 'lead.created' | 'lead.updated' | 'lead.stage_changed' | 'lead.assigned' | 'lead.reenquired'
+  | 'interaction.created' | 'message.queued' | 'message.failed' | 'message.received' | 'message.updated' | 'message.sent' | 'task.created' | 'task.updated'
   | 'task.due_soon' | 'sla.breached' | 'property.created' | 'property.updated' | 'match.found'
   | 'share_link.opened' | 'deal.booked' | 'attendance.changed';
 

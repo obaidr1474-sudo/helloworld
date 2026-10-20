@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { requirementsSchema } from '../lib/validation.js';
 import { z } from 'zod';
 import { withTenant } from '../lib/db.js';
 import { actorOf, authenticate, ifMatch, parse } from '../lib/http.js';
@@ -8,26 +9,18 @@ import { createShareLink } from '../services/share.js';
 import { listMessages, sendOrLog, recordInbound } from '../services/messages.js';
 import { DISPOSITIONS, STAGES } from '../domain/pipeline.js';
 
-const reqSchema = z.object({
-  purpose: z.enum(['buy', 'rent', 'invest', '']).optional(),
-  offering: z.enum(['ready', 'off_plan', 'any']).optional(),
-  types: z.array(z.string()).optional(),
-  beds: z.number().int().min(0).max(20).nullable().optional(),
-  budgetMin: z.number().min(0).nullable().optional(),
-  budgetMax: z.number().min(0).nullable().optional(),
-  communities: z.array(z.string()).optional(),
-}).strict();
+const reqSchema=requirementsSchema;
 
 const createSchema = z.object({
-  name: z.string().min(1), phone: z.string().nullable().optional(), email: z.string().email().nullable().optional().or(z.literal('')),
-  source: z.string().min(1), subSource: z.string().nullable().optional(), listingRef: z.string().nullable().optional(),
+  name: z.string().trim().min(1).max(200), phone: z.string().nullable().optional(), email: z.string().email().nullable().optional().or(z.literal('')),
+  source:z.string().trim().regex(/^[a-z0-9_]{1,50}$/), subSource: z.string().nullable().optional(), listingRef:z.string().trim().max(200).nullable().optional(),
   requirements: reqSchema.optional(), note: z.string().nullable().optional(),
   ownerId: z.union([z.string().uuid(), z.literal('auto'), z.null()]).optional(),
 });
 
 const listSchema = z.object({
       scope: z.enum(['all', 'mine', 'unassigned', 'reenquired', 'sla']).optional(),
-      queue: z.enum(['active', 'new', 'scheduled', 'overdue', 'eoi', 'booked', 'lost', 'all']).optional(),
+      queue: z.enum(['active', 'new', 'scheduled', 'overdue', 'eoi', 'booked', 'lost','all','needs_update','unacknowledged']).optional(),
       source: z.string().optional(), stage: z.enum(STAGES).optional(), ownerId: z.string().optional(),
       temperature: z.enum(['hot', 'warm', 'cold']).optional(), q: z.string().optional(),
       sort: z.enum(['updated', 'created', 'next_action', 'score']).optional(), cursor: z.string().optional(),
@@ -68,7 +61,7 @@ export async function leadRoutes(app: FastifyInstance) {
   app.patch('/leads/:id', async (req, reply) => {
     const a = actorOf(req); const { id } = req.params as { id: string };
     const b = parse(z.object({
-      name: z.string().min(1).optional(), phone: z.string().nullable().optional(), email: z.string().nullable().optional(),
+      name: z.string().min(1).optional(), phone:z.string().max(80).nullable().optional(),email:z.string().email().max(254).nullable().optional(),
       source: z.string().optional(), subSource: z.string().nullable().optional(), requirements: reqSchema.optional(),
       temperature: z.enum(['hot', 'warm', 'cold']).nullable().optional(), tags: z.array(z.string()).optional(),
     }), req.body);
@@ -128,7 +121,7 @@ export async function leadRoutes(app: FastifyInstance) {
     const a = actorOf(req); const { id } = req.params as { id: string };
     const b = parse(z.object({
       direction: z.enum(['inbound', 'outbound']), outcome: z.enum(['connected', 'no_answer', 'busy', 'switched_off', 'wrong_number']),
-      durationSec: z.number().int().min(0).optional(), notes: z.string().max(5000).optional(),
+      durationSec:z.number().int().min(0).max(86400).optional(), notes: z.string().max(5000).optional(),
     }), req.body);
     reply.code(201);
     return withTenant(a.tenantId, (tx) => L.logCall(tx, a, id, b));
@@ -154,7 +147,7 @@ export async function leadRoutes(app: FastifyInstance) {
   app.post('/leads/:id/messages', async (req, reply) => {
     const a = actorOf(req); const { id } = req.params as { id: string };
     const b = parse(z.object({
-      body: z.string().max(4096).default(''), direction: z.enum(['outbound', 'inbound']).default('outbound'), mode: z.enum(['send', 'log']).default('log'),
+      clientRequestId:z.string().uuid().optional(),body: z.string().max(4096).default(''), direction: z.enum(['outbound', 'inbound']).default('outbound'), mode: z.enum(['send', 'log']).default('log'),
       template: z.object({ name: z.string(), lang: z.string().default('en'), vars: z.array(z.string()).default([]) }).optional(),
     }), req.body);
     reply.code(201);
@@ -165,7 +158,7 @@ export async function leadRoutes(app: FastifyInstance) {
         if (!m) throw notFound('Message');
         return m;
       }
-      return sendOrLog(tx, a, id, b.body, { mode: b.mode, template: b.template });
+      return sendOrLog(tx, a, id, b.body, {mode:b.mode,template:b.template,clientRequestId:b.clientRequestId});
     });
   });
 }

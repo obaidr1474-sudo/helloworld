@@ -61,7 +61,7 @@ export function pickAgent(rule: Rule, agents: Agent[], stickyOwnerId?: string | 
     return { agentId: stickyOwnerId, ruleId: rule.id, strategy: 'sticky_owner', reason: 'Returned to previous owner' };
   }
   if (def.pool.onlyClockedIn) pool = pool.filter((a) => a.is_clocked_in);
-  if (def.pool.respectCapacity !== false) pool = pool.filter((a) => !a.capacity_max_open_leads || a.open_leads < a.capacity_max_open_leads);
+  if (def.pool.respectCapacity !== false) pool = pool.filter((a) => a.capacity_max_open_leads==null || a.open_leads < a.capacity_max_open_leads);
   if (def.strategy === 'manual_pool' || pool.length === 0) {
     return { agentId: null, ruleId: rule.id, strategy: def.strategy, reason: pool.length ? 'Left in unassigned pool' : 'No eligible agent available' };
   }

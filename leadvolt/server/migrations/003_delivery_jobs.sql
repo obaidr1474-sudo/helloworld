@@ -1,0 +1,10 @@
+ALTER TABLE properties ADD COLUMN version integer NOT NULL DEFAULT 1;
+ALTER TABLE messages ADD COLUMN client_request_id uuid;
+ALTER TABLE messages ADD COLUMN send_payload jsonb;
+ALTER TABLE messages ADD COLUMN send_attempted_at timestamptz;
+ALTER TABLE messages ADD COLUMN delivery_error text;
+ALTER TABLE messages ADD COLUMN provider_status_at timestamptz;
+ALTER TABLE messages DROP CONSTRAINT messages_status_check;
+ALTER TABLE messages ADD CONSTRAINT messages_status_check CHECK(status IN ('logged','queued','processing','delivery_unknown','sent','delivered','read','failed','received'));
+CREATE UNIQUE INDEX ux_messages_client_request ON messages(tenant_id,client_request_id) WHERE client_request_id IS NOT NULL;
+CREATE INDEX ix_messages_send_queue ON messages(created_at) WHERE status='queued';

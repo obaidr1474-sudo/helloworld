@@ -1,6 +1,8 @@
+import crypto from 'node:crypto';
+import { ensureListingRoute, normalizeReference, PORTAL_SOURCES, requireAssignableAgent, routeDecision } from './routing.js';
 import type { Tx } from '../lib/db.js';
 import { emit, audit } from '../lib/events.js';
-import { badRequest, conflict, forbidden, notFound, preconditionFailed } from '../lib/errors.js';
+import { badRequest,conflict,forbidden,notFound,preconditionFailed,HttpError } from '../lib/errors.js';
 import { normalizePhone } from '../lib/phone.js';
 import { DISPOSITIONS, dispositionByKey, isActiveStage, validateDisposition, type Stage } from '../domain/pipeline.js';
 import { scoreLead, temperatureOf, type Requirements } from '../domain/scoring.js';
@@ -16,6 +18,8 @@ export interface LeadRow {
   id: string; tenant_id: string; serial_no: number; full_name: string; phone_e164: string | null; email: string | null;
   owner_id: string | null; original_owner_id: string | null; team_id: string | null; stage: Stage; sub_status: string | null;
   lost_reason: string | null; source: string; sub_source: string | null; campaign: Record<string, unknown>; listing_ref: string | null;
+  listing_route_id: string | null; routing_mode: string; routing_status: string; routing_note: string | null; opportunity_key: string;
+  assigned_at: Date | null; acknowledged_at: Date | null; last_agent_update_at: Date | null;
   property_id: string | null; requirements: Requirements; score: number; temperature: 'hot' | 'warm' | 'cold';
   temperature_overridden: boolean; tags: string[]; reenquiry_count: number; inbound_count: number; connected_calls: number;
   deal_value: number | null; first_response_at: Date | null; last_contacted_at: Date | null; last_inbound_at: Date | null;
@@ -30,7 +34,8 @@ export function leadDto(r: LeadRow) {
     temperature: r.temperature, temperatureOverridden: r.temperature_overridden, tags: r.tags, reenquiryCount: r.reenquiry_count,
     dealValue: r.deal_value, firstResponseAt: r.first_response_at, lastContactedAt: r.last_contacted_at, lastInboundAt: r.last_inbound_at,
     nextActionAt: r.next_action_at, slaDueAt: r.sla_due_at, slaBreached: !!r.sla_breached_at, createdAt: r.created_at,
-    updatedAt: r.updated_at, version: r.version,
+    updatedAt: r.updated_at, version: r.version, listingRouteId:r.listing_route_id,routingMode:r.routing_mode,routingStatus:r.routing_status,routingNote:r.routing_note,
+    assignedAt:r.assigned_at,acknowledgedAt:r.acknowledged_at,lastAgentUpdateAt:r.last_agent_update_at,
   };
 }
 export type LeadDto = ReturnType<typeof leadDto>;
@@ -39,11 +44,11 @@ export type LeadDto = ReturnType<typeof leadDto>;
 
 export function assertCanRead(actor: Actor, lead: Pick<LeadRow, 'owner_id'>) {
   if (isManager(actor) || actor.role === 'viewer') return;
-  if (lead.owner_id === null || lead.owner_id === actor.id) return;
+  if (actor.id && lead.owner_id === actor.id) return;
   throw forbidden('This lead belongs to another agent.');
 }
 export function assertCanWrite(actor: Actor, lead: Pick<LeadRow, 'owner_id'>) {
-  if (actor.role === 'viewer') throw forbidden('Viewers cannot change leads.');
+  if (!isManager(actor) && actor.role !== 'agent') throw forbidden('Your role cannot change leads.');
   assertCanRead(actor, lead);
 }
 
@@ -130,105 +135,90 @@ export interface LeadInput {
   requirements?: Requirements;
   note?: string | null;
   ownerId?: string | null | 'auto';
-  rawPayload?: unknown;
+  rawPayload?:unknown;opportunityKey?:string; routingMode?: 'listing'|'rules'; providerEventId?: string;
 }
 
 export interface CreateResult { lead: LeadDto; created: boolean; reenquiry: boolean; allocationReason?: string }
 
 export async function createOrReenquire(tx: Tx, actor: Actor, input: LeadInput): Promise<CreateResult> {
-  const tenantId = actor.tenantId;
-  const phone = normalizePhone(input.phone);
-  const email = input.email?.trim().toLowerCase() || null;
+  const tenantId=actor.tenantId;
+  if (actor.role!=='system' && !isManager(actor) && actor.role!=='agent') throw forbidden('Your role cannot create leads.');
+  const phone=normalizePhone(input.phone), email=input.email?.trim().toLowerCase()||null;
+  if (input.phone && !phone) throw badRequest('That phone number is not valid.');
   if (!phone && !email) throw badRequest('A lead needs a phone number or an email address.');
   if (!input.name?.trim()) throw badRequest('A lead needs a name.');
-
-  // email-only duplicates (phone duplicates are caught by the unique index below)
-  let existing: LeadRow | undefined;
-  if (!phone && email) {
-    existing = (await tx.query<LeadRow>(`SELECT * FROM leads WHERE tenant_id = $1 AND email = $2 AND deleted_at IS NULL FOR UPDATE`, [tenantId, email])).rows[0];
-  }
-
-  let lead: LeadRow | undefined;
-  if (!existing) {
-    const listing = input.listingRef
-      ? (await tx.query(`SELECT id FROM properties WHERE tenant_id = $1 AND deleted_at IS NULL
-           AND (reference = $2 OR EXISTS (SELECT 1 FROM jsonb_each_text(portal_refs) e WHERE e.value = $2)) LIMIT 1`, [tenantId, input.listingRef])).rows[0]
-      : undefined;
-    const { rows: [t] } = await tx.query(`UPDATE tenants SET lead_serial_seq = lead_serial_seq + 1 WHERE id = $1 RETURNING lead_serial_seq, settings`, [tenantId]);
-    const ins = await tx.query<LeadRow>(
-      `INSERT INTO leads (tenant_id, serial_no, full_name, phone_e164, email, source, sub_source, campaign, listing_ref, property_id,
-                          requirements, sub_status, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'Untouched',$12,$12)
-       ON CONFLICT (tenant_id, phone_e164) WHERE phone_e164 IS NOT NULL AND deleted_at IS NULL DO NOTHING
-       RETURNING *`,
-      [tenantId, t.lead_serial_seq, input.name.trim(), phone, email, input.source, input.subSource ?? null, input.campaign ?? {},
-        input.listingRef ?? null, listing?.id ?? null, input.requirements ?? {}, actor.id]);
-    lead = ins.rows[0];
-    if (!lead && phone) {
-      existing = (await tx.query<LeadRow>(`SELECT * FROM leads WHERE tenant_id = $1 AND phone_e164 = $2 AND deleted_at IS NULL FOR UPDATE`, [tenantId, phone])).rows[0];
-    }
-    if (lead) {
-      await tx.query(`INSERT INTO lead_enquiries (tenant_id, lead_id, source, sub_source, listing_ref, raw_payload) VALUES ($1,$2,$3,$4,$5,$6)`,
-        [tenantId, lead.id, input.source, input.subSource ?? null, input.listingRef ?? null, input.rawPayload ?? {}]);
-      await addInteraction(tx, tenantId, lead.id, actor.id, 'system',
-        `Lead created from ${input.source}${input.subSource ? ' · ' + input.subSource : ''}${input.note ? '\n' + input.note : ''}`);
-
-      // allocation
-      let ownerId: string | null = null; let reason = 'Manual'; let ruleId: string | null = null; let slaMinutes = Number(t.settings?.sla_minutes ?? 15);
-      if (input.ownerId === 'auto' || input.ownerId === undefined) {
-        const r = await runAllocation(tx, tenantId, { source: lead.source, sub_source: lead.sub_source, requirements: lead.requirements, listing_ref: lead.listing_ref });
-        ownerId = r.agentId; reason = r.reason; ruleId = r.ruleId; if (r.sla?.firstResponseMinutes) slaMinutes = r.sla.firstResponseMinutes;
-      } else ownerId = input.ownerId;
-      await tx.query(`UPDATE leads SET owner_id = $3, original_owner_id = $3, sla_due_at = now() + make_interval(mins => $4) WHERE tenant_id = $1 AND id = $2`,
-        [tenantId, lead.id, ownerId, slaMinutes]);
-      if (ownerId) {
-        await tx.query(`INSERT INTO lead_assignments (tenant_id, lead_id, to_user_id, assigned_by, rule_id, reason) VALUES ($1,$2,$3,$4,$5,$6)`,
-          [tenantId, lead.id, ownerId, actor.id, ruleId, input.ownerId === 'auto' || input.ownerId === undefined ? 'rule' : 'manual']);
-        await addInteraction(tx, tenantId, lead.id, null, 'assignment', `Assigned (${reason})`, { payload: { to: ownerId, rule_id: ruleId } });
+  const source=input.source.trim().toLowerCase(), reference=normalizeReference(input.listingRef);
+  const listingMode=input.routingMode==='listing' || !!reference || (actor.role==='system' && PORTAL_SOURCES.has(source));
+  const key=input.opportunityKey??(reference?`${source}:${reference}`:listingMode?`${source}:missing:${input.providerEventId??crypto.randomUUID()}`:'');
+  const route=listingMode&&reference?await ensureListingRoute(tx,tenantId,source,reference):null;
+  const decision=route?routeDecision(route):{ownerId:null,status:'missing_reference',reason:'The portal enquiry did not include a listing reference'};
+  if (actor.role==='agent' && input.ownerId && input.ownerId!=='auto' && input.ownerId!==actor.id) throw forbidden('Agents can create leads only for themselves.');
+  if (actor.role==='agent' && listingMode && decision.ownerId!==actor.id) throw forbidden('An administrator must review ownership for this listing.');
+  // Protect both phone and email duplicates, including concurrent retries, without merging unrelated listings.
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`${tenantId}:${phone??email}:${key}`]);
+  const existing=(await tx.query<LeadRow>(`SELECT * FROM leads WHERE tenant_id=$1 AND deleted_at IS NULL AND opportunity_key=$2
+    AND (($3::text IS NOT NULL AND phone_e164=$3) OR ($3::text IS NULL AND phone_e164 IS NULL AND email=$4)) FOR UPDATE`,[tenantId,key,phone,email])).rows[0];
+  if (existing) {
+    if (actor.role!=='system') assertCanRead(actor,existing);
+    const reopened=existing.stage==='lost';
+    await tx.query(`UPDATE leads SET reenquiry_count=reenquiry_count+1,last_reenquired_at=now(),last_inbound_at=now(),inbound_count=inbound_count+1,
+      stage=CASE WHEN stage='lost' THEN 'new' ELSE stage END,sub_status=CASE WHEN stage='lost' THEN 'Re-enquired' ELSE sub_status END,
+      lost_reason=CASE WHEN stage='lost' THEN NULL ELSE lost_reason END,updated_at=now(),version=version+1 WHERE tenant_id=$1 AND id=$2`,[tenantId,existing.id]);
+    await tx.query(`INSERT INTO lead_enquiries(tenant_id,lead_id,source,sub_source,listing_ref,raw_payload) VALUES($1,$2,$3,$4,$5,$6)`,[tenantId,existing.id,source,input.subSource??null,reference,input.rawPayload??{}]);
+    await addInteraction(tx,tenantId,existing.id,actor.id,'reenquiry',`Re-enquired via ${source}${reference?' · listing '+reference:''}${input.note?'\n'+input.note:''}`,{direction:'inbound'});
+    // Existing explicit assignments remain intact; mapping changes never silently steal worked leads.
+    if (!existing.owner_id) {
+      if (listingMode) {
+        await tx.query(`UPDATE leads SET routing_mode='listing',listing_route_id=$3,routing_status=$4,routing_note=$5,property_id=COALESCE($6,property_id) WHERE tenant_id=$1 AND id=$2`,[tenantId,existing.id,route?.id??null,decision.status,decision.reason,route?.property_id??null]);
+        if (decision.ownerId) await assignInternal(tx,{...actor,role:'system'},existing,decision.ownerId,'listing_mapping');
+      } else {
+        const allocation=await runAllocation(tx,tenantId,{source,requirements:existing.requirements},existing.original_owner_id);
+        if (allocation.agentId) await assignInternal(tx,actor,existing,allocation.agentId,'reenquiry_sticky');
       }
-      lead = await loadLead(tx, tenantId, lead.id);
-      await rescore(tx, tenantId, lead);
-      lead = await loadLead(tx, tenantId, lead.id);
-      await emit(tx, tenantId, 'lead.created', { lead_id: lead.id, owner_id: lead.owner_id, name: lead.full_name, source: lead.source });
-      await audit(tx, tenantId, actor.id, 'lead', lead.id, 'create');
-      return { lead: leadDto(lead), created: true, reenquiry: false, allocationReason: reason };
     }
+    let updated=await loadLead(tx,tenantId,existing.id); await rescore(tx,tenantId,updated); updated=await loadLead(tx,tenantId,existing.id);
+    await emit(tx,tenantId,'lead.reenquired',{lead_id:updated.id,owner_id:updated.owner_id,name:updated.full_name,reopened});
+    return {lead:leadDto(updated),created:false,reenquiry:true};
   }
-
-  if (!existing) throw conflict('Could not create or match this lead. Try again.');
-  // ---- re-enquiry on existing lead
-  const reopened = existing.stage === 'lost';
-  await tx.query(
-    `UPDATE leads SET reenquiry_count = reenquiry_count + 1, last_reenquired_at = now(), last_inbound_at = now(), inbound_count = inbound_count + 1,
-            stage = CASE WHEN stage = 'lost' THEN 'new' ELSE stage END,
-            sub_status = CASE WHEN stage = 'lost' THEN 'Re-enquired' ELSE sub_status END,
-            lost_reason = CASE WHEN stage = 'lost' THEN NULL ELSE lost_reason END,
-            updated_at = now(), version = version + 1
-      WHERE tenant_id = $1 AND id = $2`, [tenantId, existing.id]);
-  await tx.query(`INSERT INTO lead_enquiries (tenant_id, lead_id, source, sub_source, listing_ref, raw_payload) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [tenantId, existing.id, input.source, input.subSource ?? null, input.listingRef ?? null, input.rawPayload ?? {}]);
-  await addInteraction(tx, tenantId, existing.id, actor.id, 'reenquiry',
-    `Re-enquired via ${input.source}${input.subSource ? ' · ' + input.subSource : ''}${input.note ? '\n' + input.note : ''}`, { direction: 'inbound' });
-  if (!existing.owner_id) {
-    const r = await runAllocation(tx, tenantId, { source: input.source, requirements: existing.requirements }, existing.original_owner_id);
-    if (r.agentId) await assignInternal(tx, actor, existing, r.agentId, 'reenquiry_sticky');
+  const tenant=(await tx.query(`UPDATE tenants SET lead_serial_seq=lead_serial_seq+1 WHERE id=$1 RETURNING lead_serial_seq,settings`,[tenantId])).rows[0];
+  let ownerId:string|null=null,reason='Manual',ruleId:string|null=null;
+  let slaMinutes=Number(tenant.settings?.sla_minutes??15);
+  if (listingMode) { ownerId=decision.ownerId; reason=decision.reason; }
+  else if (actor.role==='agent') { ownerId=actor.id; reason='Created by responsible agent'; }
+  else if (input.ownerId===undefined || input.ownerId==='auto') {
+    const allocation=await runAllocation(tx,tenantId,{source,sub_source:input.subSource,requirements:input.requirements});
+    ownerId=allocation.agentId;reason=allocation.reason;ruleId=allocation.ruleId;
+    if (allocation.sla?.firstResponseMinutes) slaMinutes=allocation.sla.firstResponseMinutes;
+  } else ownerId=input.ownerId;
+  if (ownerId) await requireAssignableAgent(tx,tenantId,ownerId);
+  const {rows:[created]}=await tx.query<LeadRow>(`INSERT INTO leads(tenant_id,serial_no,full_name,phone_e164,email,source,sub_source,campaign,listing_ref,property_id,
+    requirements,sub_status,created_by,updated_by,owner_id,original_owner_id,opportunity_key,listing_route_id,routing_mode,routing_status,routing_note,assigned_at,sla_due_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'Untouched',$12,$12,$13,$13,$14,$15,$16,$17,$18,CASE WHEN $13::uuid IS NOT NULL THEN now() END,now()+make_interval(mins=>$19)) RETURNING *`,
+    [tenantId,tenant.lead_serial_seq,input.name.trim(),phone,email,source,input.subSource??null,input.campaign??{},reference,route?.property_id??null,input.requirements??{},actor.id,
+      ownerId,key,route?.id??null,listingMode?'listing':'rules',listingMode?decision.status:ownerId?'assigned':'manual_review',listingMode?reason:null,slaMinutes]);
+  await tx.query(`INSERT INTO lead_enquiries(tenant_id,lead_id,source,sub_source,listing_ref,raw_payload) VALUES($1,$2,$3,$4,$5,$6)`,[tenantId,created.id,source,input.subSource??null,reference,input.rawPayload??{}]);
+  await addInteraction(tx,tenantId,created.id,actor.id,'system',`Lead received from ${source}${reference?' · listing '+reference:''}${input.note?'\n'+input.note:''}`);
+  if (ownerId) {
+    await tx.query(`INSERT INTO lead_assignments(tenant_id,lead_id,to_user_id,assigned_by,rule_id,reason) VALUES($1,$2,$3,$4,$5,$6)`,[tenantId,created.id,ownerId,actor.id,ruleId,listingMode?'listing_mapping':ruleId?'rule':'manual']);
+    await addInteraction(tx,tenantId,created.id,null,'assignment',`Assigned (${reason})`,{payload:{to:ownerId,rule_id:ruleId}});
   }
-  let lead2 = await loadLead(tx, tenantId, existing.id);
-  await rescore(tx, tenantId, lead2);
-  lead2 = await loadLead(tx, tenantId, existing.id);
-  await emit(tx, tenantId, 'lead.reenquired', { lead_id: lead2.id, owner_id: lead2.owner_id, name: lead2.full_name, reopened });
-  return { lead: leadDto(lead2), created: false, reenquiry: true };
+  await rescore(tx,tenantId,created);
+  const lead=await loadLead(tx,tenantId,created.id);
+  await emit(tx,tenantId,'lead.created',{lead_id:lead.id,owner_id:lead.owner_id,name:lead.full_name,source:lead.source,routing_status:lead.routing_status});
+  if (listingMode&&!ownerId) await emit(tx,tenantId,'routing.exception',{lead_id:lead.id,owner_id:null,source,listing_ref:reference,reason:decision.status});
+  await audit(tx,tenantId,actor.id,'lead',lead.id,'create',{routingMode:listingMode?'listing':'rules',ownerId,listingRef:reference,reason});
+  return {lead:leadDto(lead),created:true,reenquiry:false,allocationReason:reason};
 }
 
 // ---------------------------------------------------------------- assignment
 
-async function assignInternal(tx: Tx, actor: Actor, lead: LeadRow, toUserId: string | null, reason: 'manual' | 'sla_breach' | 'reenquiry_sticky' | 'bulk' | 'rule') {
-  if (toUserId) {
-    const u = (await tx.query(`SELECT id, full_name FROM users WHERE tenant_id = $1 AND id = $2 AND is_active`, [actor.tenantId, toUserId])).rows[0];
-    if (!u) throw badRequest('That agent does not exist or is deactivated.');
-  }
+async function assignInternal(tx: Tx, actor: Actor, lead: LeadRow, toUserId: string | null, reason: 'manual' | 'sla_breach' | 'reenquiry_sticky' | 'bulk' | 'rule' | 'listing_mapping' | 'deactivation') {
+  if (toUserId) await requireAssignableAgent(tx,actor.tenantId,toUserId);
   if (lead.owner_id === toUserId) return;
-  await tx.query(`UPDATE leads SET owner_id = $3, original_owner_id = COALESCE(original_owner_id, $3), updated_at = now(), version = version + 1,
+  await tx.query(`UPDATE leads SET owner_id = $3, original_owner_id = COALESCE(original_owner_id, $3), assigned_at=CASE WHEN $3::uuid IS NOT NULL THEN now() END,
+                  acknowledged_at=NULL,last_agent_update_at=NULL,routing_status=CASE WHEN $3::uuid IS NOT NULL THEN 'assigned' ELSE 'manual_review' END,
+                  sla_due_at=CASE WHEN $3::uuid IS NOT NULL AND first_response_at IS NULL THEN now()+make_interval(mins=>(SELECT COALESCE((settings->>'sla_minutes')::int,15) FROM tenants WHERE id=$1)) ELSE sla_due_at END,
+                  sla_breached_at=CASE WHEN $3::uuid IS NOT NULL AND first_response_at IS NULL THEN NULL ELSE sla_breached_at END,updated_at = now(), version = version + 1,
                   updated_by = $4 WHERE tenant_id = $1 AND id = $2`, [actor.tenantId, lead.id, toUserId, actor.id]);
   await tx.query(`UPDATE tasks SET assignee_id = $3, updated_at = now() WHERE tenant_id = $1 AND lead_id = $2 AND status = 'open' AND $3::uuid IS NOT NULL`,
     [actor.tenantId, lead.id, toUserId]);
@@ -241,10 +231,7 @@ async function assignInternal(tx: Tx, actor: Actor, lead: LeadRow, toUserId: str
 
 export async function assignLead(tx: Tx, actor: Actor, leadId: string, toUserId: string | null) {
   const lead = await loadLead(tx, actor.tenantId, leadId, true);
-  if (!isManager(actor)) {
-    // agents may only claim unassigned leads for themselves
-    if (!(lead.owner_id === null && toUserId === actor.id)) throw forbidden('Only managers can reassign leads.');
-  }
+  if (!isManager(actor)) throw forbidden('Only administrators and managers can assign leads.');
   await assignInternal(tx, actor, lead, toUserId, 'manual');
   return leadDto(await loadLead(tx, actor.tenantId, leadId));
 }
@@ -272,7 +259,8 @@ export async function applyDisposition(tx: Tx, actor: Actor, leadId: string, req
   const d = dispositionByKey(req.disposition);
   const subStatus = req.subStatus ?? d?.subStatuses[0];
   const err = validateDisposition(lead.stage, { ...req, subStatus });
-  if (err || !d) throw badRequest(err ?? 'Invalid status');
+  if(err||!d)throw badRequest(err??'Invalid status');
+  if(expectedVersion===undefined)throw new HttpError(428,'version_required','Send the current lead version in If-Match before updating its status.');
 
   const nextAt = d.requiresNextAction || (d.allowsNextAction && req.nextActionAt) ? new Date(req.nextActionAt!) : null;
   const prop = req.propertyId ? (await tx.query(`SELECT id, project_name FROM properties WHERE tenant_id = $1 AND id = $2`, [tenantId, req.propertyId])).rows[0] : null;
@@ -290,7 +278,7 @@ export async function applyDisposition(tx: Tx, actor: Actor, leadId: string, req
   await tx.query(
     `UPDATE leads SET stage = $3, sub_status = $4, lost_reason = $5, next_action_at = $6,
             deal_value = COALESCE($7, deal_value), first_response_at = COALESCE(first_response_at, now()),
-            last_contacted_at = now(), updated_at = now(), updated_by = $8, version = version + 1
+            last_contacted_at = now(), last_agent_update_at=CASE WHEN owner_id=$8 THEN now() ELSE last_agent_update_at END,acknowledged_at=CASE WHEN owner_id=$8 THEN COALESCE(acknowledged_at,now()) ELSE acknowledged_at END,updated_at = now(), updated_by = $8, version = version + 1
       WHERE tenant_id = $1 AND id = $2`,
     [tenantId, leadId, d.stage, d.isLost ? null : subStatus, d.isLost ? subStatus : null, nextAt, d.requiresDealValue ? req.dealValue : null, actor.id]);
 
@@ -307,8 +295,10 @@ export async function applyDisposition(tx: Tx, actor: Actor, leadId: string, req
       await emit(tx, tenantId, 'task.created', { lead_id: leadId, task_id: task.id, owner_id: assignee, due_at: nextAt.toISOString() });
     }
   }
+  if (d.stage==='lost' && lead.stage==='booked') await tx.query(`UPDATE deals SET voided_at=now(),status='cancelled' WHERE tenant_id=$1 AND lead_id=$2 AND voided_at IS NULL`,[tenantId,leadId]);
   if (d.requiresDealValue) {
-    await tx.query(`INSERT INTO deals (tenant_id, lead_id, property_id, agent_id, deal_value) VALUES ($1,$2,$3,$4,$5)`,
+    await tx.query(`INSERT INTO deals (tenant_id, lead_id, property_id, agent_id, deal_value) VALUES ($1,$2,$3,$4,$5)
+      ON CONFLICT(tenant_id,lead_id) WHERE voided_at IS NULL DO UPDATE SET property_id=EXCLUDED.property_id,agent_id=EXCLUDED.agent_id,deal_value=EXCLUDED.deal_value`,
       [tenantId, leadId, prop?.id ?? lead.property_id, ownerAfter ?? actor.id, req.dealValue]);
     await emit(tx, tenantId, 'deal.booked', { lead_id: leadId, owner_id: ownerAfter, deal_value: req.dealValue });
   }
@@ -335,6 +325,7 @@ export async function patchLead(tx: Tx, actor: Actor, leadId: string, patch: Lea
   const lead = await loadLead(tx, actor.tenantId, leadId, true);
   assertCanWrite(actor, lead);
   if (expectedVersion !== undefined && expectedVersion !== lead.version) throw preconditionFailed('This lead was updated by someone else. Reload it and try again.', { currentVersion: lead.version });
+  if(expectedVersion===undefined)throw new HttpError(428,'version_required','Send the current lead version in If-Match before editing.');
   const sets: string[] = []; const vals: unknown[] = [actor.tenantId, leadId];
   const set = (col: string, v: unknown) => { vals.push(v); sets.push(`${col} = $${vals.length}`); };
   if (patch.name !== undefined) set('full_name', patch.name.trim());
@@ -342,13 +333,13 @@ export async function patchLead(tx: Tx, actor: Actor, leadId: string, patch: Lea
     const p = normalizePhone(patch.phone);
     if (patch.phone && !p) throw badRequest('That phone number is not valid.');
     if (p) {
-      const dup = (await tx.query(`SELECT serial_no, full_name FROM leads WHERE tenant_id = $1 AND phone_e164 = $2 AND id <> $3 AND deleted_at IS NULL`, [actor.tenantId, p, leadId])).rows[0];
+      const dup = (await tx.query(`SELECT serial_no, full_name FROM leads WHERE tenant_id = $1 AND phone_e164 = $2 AND id <> $3 AND opportunity_key=$4 AND deleted_at IS NULL`, [actor.tenantId, p, leadId,lead.opportunity_key])).rows[0];
       if (dup) throw conflict(`${dup.full_name} (#${dup.serial_no}) already uses this phone number.`);
     }
     set('phone_e164', p);
   }
   if (patch.email !== undefined) set('email', patch.email?.trim().toLowerCase() || null);
-  if (patch.source !== undefined) set('source', patch.source);
+  if (patch.source !== undefined) { if (lead.routing_mode==='listing' && patch.source!==lead.source) throw badRequest('The source of a listing-routed enquiry cannot be changed.'); set('source',patch.source); }
   if (patch.subSource !== undefined) set('sub_source', patch.subSource);
   if (patch.requirements !== undefined) set('requirements', patch.requirements);
   if (patch.tags !== undefined) set('tags', patch.tags);
@@ -357,6 +348,9 @@ export async function patchLead(tx: Tx, actor: Actor, leadId: string, patch: Lea
     if (patch.temperature) set('temperature', patch.temperature);
   }
   if (!sets.length) return leadDto(lead);
+  const resultingPhone=patch.phone===undefined?lead.phone_e164:normalizePhone(patch.phone);
+  const resultingEmail=patch.email===undefined?lead.email:patch.email?.trim();
+  if (!resultingPhone && !resultingEmail) throw badRequest('Keep at least one valid phone number or email address.');
   set('updated_by', actor.id);
   await tx.query(`UPDATE leads SET ${sets.join(', ')}, updated_at = now(), version = version + 1 WHERE tenant_id = $1 AND id = $2`, vals);
   let updated = await loadLead(tx, actor.tenantId, leadId);
@@ -376,6 +370,7 @@ export async function addNote(tx: Tx, actor: Actor, leadId: string, body: string
   if (mentions.length) {
     mentioned = (await tx.query(`SELECT id FROM users WHERE tenant_id = $1 AND lower(split_part(full_name, ' ', 1)) = ANY($2)`, [actor.tenantId, mentions])).rows.map((r) => r.id);
   }
+  await tx.query(`UPDATE leads SET last_agent_update_at=CASE WHEN owner_id=$3 THEN now() ELSE last_agent_update_at END,acknowledged_at=CASE WHEN owner_id=$3 THEN COALESCE(acknowledged_at,now()) ELSE acknowledged_at END,updated_at=now(),version=version+1 WHERE tenant_id=$1 AND id=$2`,[actor.tenantId,leadId,actor.id]);
   const i = await addInteraction(tx, actor.tenantId, leadId, actor.id, 'note', body.trim(), { direction: 'internal', confidential, payload: { mentions: mentioned } });
   if (mentioned.length) await emit(tx, actor.tenantId, 'lead.updated', { lead_id: leadId, user_ids: mentioned, mention: true });
   return i;
@@ -390,22 +385,28 @@ export async function logCall(tx: Tx, actor: Actor, leadId: string, call: { dire
     { direction: call.direction, externalId: call.externalId, payload: { outcome: call.outcome, duration_sec: call.durationSec ?? 0, recording_url: call.recordingUrl ?? null } });
   await tx.query(
     `UPDATE leads SET last_contacted_at = now(),
-            first_response_at = CASE WHEN $3 = 'outbound' THEN COALESCE(first_response_at, now()) ELSE first_response_at END,
+            first_response_at = CASE WHEN $3='outbound' OR $4 THEN COALESCE(first_response_at,now()) ELSE first_response_at END,
             last_inbound_at = CASE WHEN $3 = 'inbound' THEN now() ELSE last_inbound_at END,
             inbound_count = inbound_count + CASE WHEN $3 = 'inbound' THEN 1 ELSE 0 END,
             connected_calls = connected_calls + CASE WHEN $4 THEN 1 ELSE 0 END,
-            updated_at = now(), version = version + 1
-      WHERE tenant_id = $1 AND id = $2`, [actor.tenantId, leadId, call.direction, connected]);
-  const updated = await loadLead(tx, actor.tenantId, leadId);
-  await rescore(tx, actor.tenantId, updated);
-  return i;
+            last_agent_update_at=CASE WHEN owner_id=$5 THEN now() ELSE last_agent_update_at END,acknowledged_at=CASE WHEN owner_id=$5 THEN COALESCE(acknowledged_at,now()) ELSE acknowledged_at END,updated_at=now(),version=version+1
+      WHERE tenant_id=$1 AND id=$2`,[actor.tenantId,leadId,call.direction,connected,actor.id]);
+  let updated=await loadLead(tx,actor.tenantId,leadId);
+  if(isActiveStage(updated.stage)&&!updated.next_action_at){
+    const due=new Date(Date.now()+86400000),assignee=updated.owner_id??actor.id;
+    await tx.query(`INSERT INTO tasks(tenant_id,lead_id,assignee_id,created_by,type,title,due_at) VALUES($1,$2,$3,$4,'follow_up','Follow up after recorded call',$5)`,[actor.tenantId,leadId,assignee,actor.id,due]);
+    await tx.query(`UPDATE leads SET next_action_at=$3,stage=CASE WHEN stage='new' THEN 'contacted' ELSE stage END,
+      sub_status=CASE WHEN stage='new' THEN $4 ELSE sub_status END WHERE tenant_id=$1 AND id=$2`,[actor.tenantId,leadId,due,connected?'Follow-up':call.outcome==='busy'?'Busy':'Not reachable']);
+    updated=await loadLead(tx,actor.tenantId,leadId);
+  }
+  await rescore(tx,actor.tenantId,updated);return i;
 }
 
 // ---------------------------------------------------------------- queries
 
 export interface ListParams {
   scope?: 'all' | 'mine' | 'unassigned' | 'reenquired' | 'sla';
-  queue?: 'active' | 'new' | 'scheduled' | 'overdue' | 'eoi' | 'booked' | 'lost' | 'all';
+  queue?: 'active' | 'new' | 'scheduled' | 'overdue' | 'eoi' | 'booked' | 'lost' | 'all' | 'needs_update' | 'unacknowledged';
   source?: string; stage?: Stage; ownerId?: string; temperature?: string; q?: string;
   sort?: 'updated' | 'created' | 'next_action' | 'score';
   cursor?: string; limit?: number; createdFrom?: string; createdTo?: string;
@@ -421,7 +422,7 @@ const SORTS = {
 function leadWhere(actor: Actor, p: ListParams) {
   const where: string[] = ['tenant_id = $1', 'deleted_at IS NULL']; const vals: unknown[] = [actor.tenantId];
   const add = (sql: string, ...v: unknown[]) => { let s = sql; for (const x of v) { vals.push(x); s = s.replace('?', `$${vals.length}`); } where.push(s); };
-  if (!isManager(actor) && actor.role !== 'viewer') add('(owner_id = ? OR owner_id IS NULL)', actor.id);
+  if (!isManager(actor) && actor.role !== 'viewer') add('owner_id = ?', actor.id);
   switch (p.scope) {
     case 'mine': add('owner_id = ?', actor.id); break;
     case 'unassigned': where.push('owner_id IS NULL'); break;
@@ -429,6 +430,8 @@ function leadWhere(actor: Actor, p: ListParams) {
     case 'sla': where.push('sla_breached_at IS NOT NULL AND first_response_at IS NULL'); break;
   }
   switch (p.queue ?? 'active') {
+    case 'needs_update': where.push(`stage NOT IN ('lost','booked') AND owner_id IS NOT NULL AND (last_agent_update_at IS NULL OR last_agent_update_at<(SELECT date_trunc('day',now() AT TIME ZONE timezone) AT TIME ZONE timezone FROM tenants WHERE id=$1))`); break;
+    case 'unacknowledged': where.push(`stage NOT IN ('lost','booked') AND owner_id IS NOT NULL AND acknowledged_at IS NULL`); break;
     case 'active': where.push(`stage NOT IN ('lost','booked')`); break;
     case 'new': where.push(`stage = 'new'`); break;
     case 'scheduled': where.push(`stage NOT IN ('lost','booked') AND next_action_at >= now()`); break;
@@ -447,7 +450,7 @@ function leadWhere(actor: Actor, p: ListParams) {
     else {
       // Digits inside a person's name are not a phone search (e.g. 'Buyer 01').
       const phoneTerm = /^[+\d\s().-]+$/.test(term) ? term.replace(/\D/g, '') : term;
-      add('(full_name ILIKE ? OR email ILIKE ? OR phone_e164 LIKE ?)', `%${term}%`, `%${term}%`, `%${phoneTerm}%`);
+      add('(full_name ILIKE ? OR email ILIKE ? OR phone_e164 LIKE ? OR listing_ref ILIKE ?)', `%${term}%`, `%${term}%`, `%${phoneTerm}%`,`%${term}%`);
     }
   }
   if (p.createdFrom) add('created_at >= ?', p.createdFrom);
@@ -482,6 +485,8 @@ export async function queueCounts(tx: Tx, actor: Actor, p: ListParams = {}) {
   const { rows: [r] } = await tx.query(
     `SELECT count(*)::int AS all,
             count(*) FILTER (WHERE reenquiry_count > 0)::int AS reenquired,
+            count(*) FILTER(WHERE stage NOT IN ('lost','booked') AND owner_id IS NOT NULL AND acknowledged_at IS NULL)::int AS unacknowledged,
+            count(*) FILTER(WHERE stage NOT IN ('lost','booked') AND owner_id IS NOT NULL AND (last_agent_update_at IS NULL OR last_agent_update_at<(SELECT date_trunc('day',now() AT TIME ZONE timezone) AT TIME ZONE timezone FROM tenants WHERE id=$1)))::int AS needs_update,
             count(*) FILTER (WHERE stage NOT IN ('lost','booked'))::int AS active,
             count(*) FILTER (WHERE stage = 'new')::int AS new,
             count(*) FILTER (WHERE stage NOT IN ('lost','booked') AND next_action_at >= now())::int AS scheduled,

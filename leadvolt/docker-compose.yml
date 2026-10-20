@@ -5,7 +5,7 @@ services:
       POSTGRES_DB: leadvolt
       POSTGRES_USER: leadvolt
       POSTGRES_PASSWORD: leadvolt
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./docker/initdb.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
@@ -13,23 +13,36 @@ services:
       test: ["CMD-SHELL", "pg_isready -U leadvolt -d leadvolt"]
       interval: 3s
       retries: 20
-
   server:
-    build: { context: ., dockerfile: server/Dockerfile }
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
     environment:
+      NODE_ENV: development
       DATABASE_URL: postgres://leadvolt_app:leadvolt_app@db:5432/leadvolt
+      WORKER_DATABASE_URL: postgres://leadvolt_worker:leadvolt_worker@db:5432/leadvolt
       MIGRATION_DATABASE_URL: postgres://leadvolt:leadvolt@db:5432/leadvolt
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-change-me}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me-dev-only-change-me}
       CORS_ORIGIN: http://localhost:8080
       PUBLIC_BASE_URL: http://localhost:8080
     depends_on:
-      db: { condition: service_healthy }
-    ports: ["4000:4000"]
-
+      db: {condition: service_healthy}
+    ports: ["127.0.0.1:4000:4000"]
+    init: true
+    restart: unless-stopped
   web:
-    build: { context: ., dockerfile: web/Dockerfile }
-    depends_on: [server]
-    ports: ["8080:80"]
-
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+    depends_on:
+      server: {condition: service_healthy}
+    ports: ["127.0.0.1:8080:8080"]
+    restart: unless-stopped
 volumes:
   pgdata:

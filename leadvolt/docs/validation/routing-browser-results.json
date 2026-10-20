@@ -1,0 +1,13 @@
+{
+  "passed": 7,
+  "checks": [
+    "admin resolves an unknown Bayut reference and saves the responsible agent without a BRN",
+    "publisher remains separate, future enquiries route automatically, and provider retries do not duplicate",
+    "agent sees My day and acknowledges receipt separately from the daily update",
+    "a meaningful agent update clears that lead from today\u2019s required updates",
+    "admin monitors team accountability, duplicate delivery receipts and audit history",
+    "operations exceptions remain usable on a phone viewport",
+    "browser authentication uses cookies and signing out revokes access"
+  ],
+  "page_errors": []
+}

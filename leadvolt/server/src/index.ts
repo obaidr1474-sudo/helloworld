@@ -2,8 +2,10 @@ import { buildApp } from './app.js';
 import { config } from './lib/config.js';
 import { attachRealtime } from './realtime.js';
 import { startWorkers } from './workers.js';
-import { pool } from './lib/db.js';
+import { assertRuntimeDatabase,assertWorkerDatabase,systemPool,pool } from './lib/db.js';
 
+await assertRuntimeDatabase();
+await assertWorkerDatabase();
 const app = await buildApp();
 attachRealtime(app);
 const stopWorkers = config.workers.enabled ? startWorkers(config.workers.slaIntervalMs, app.log) : () => {};
@@ -11,7 +13,7 @@ const stopWorkers = config.workers.enabled ? startWorkers(config.workers.slaInte
 const shutdown = async () => {
   stopWorkers();
   await app.close();
-  await pool.end();
+  await pool.end();await systemPool.end();
   process.exit(0);
 };
 process.on('SIGINT', shutdown);

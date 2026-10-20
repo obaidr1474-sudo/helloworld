@@ -3,19 +3,20 @@ import { api, qs } from '../lib/api';
 import { Icon } from '../components/Icon';
 import { makeCsv } from '../lib/csv';
 import { onEvent, subscribeLead, useRealtimeStatus } from '../lib/realtime';
-import { dt, money, num, rel, SOURCES, STAGE_LABEL, toLocalInput } from '../lib/format';
+import { dt,money,num,rel,SOURCES,STAGE_LABEL,toLocalInput,dateInZone,dateStartInZone,nextDate } from '../lib/format';
 import { errMsg, toast, type Me, type User } from '../App';
 
 export interface Lead {
   id: string; serialNo: number; name: string; phone: string | null; email: string | null; ownerId: string | null; stage: string;
   subStatus: string | null; lostReason: string | null; source: string; subSource: string | null; requirements: any; score: number;
   temperature: 'hot' | 'warm' | 'cold'; reenquiryCount: number; dealValue: number | null; firstResponseAt: string | null;
+  listingRef:string|null;listingRouteId:string|null;routingMode:string;routingStatus:string;routingNote:string|null;assignedAt:string|null;acknowledgedAt:string|null;lastAgentUpdateAt:string|null;
   nextActionAt: string | null; slaBreached: boolean; createdAt: string; updatedAt: string; version: number; propertyId: string | null;
 }
 interface Dispo { key: string; label: string; stage: string; subStatuses: string[]; requiresNextAction?: boolean; allowsNextAction?: boolean; requiresDealValue?: boolean; isLost?: boolean }
 
 const SCOPES = [['all', 'All'], ['mine', 'Mine'], ['unassigned', 'Unassigned'], ['reenquired', 'Re-enquired'], ['sla', 'SLA breach']] as const;
-const QUEUES = [['active', 'Active'], ['new', 'New'], ['scheduled', 'Scheduled'], ['overdue', 'Overdue'], ['eoi', 'EOI'], ['booked', 'Booked'], ['lost', 'Closed']] as const;
+const QUEUES = [['needs_update','Needs update'],['unacknowledged','Not acknowledged'],['active', 'Active'], ['new', 'New'], ['scheduled', 'Scheduled'], ['overdue', 'Overdue'], ['eoi', 'EOI'], ['booked', 'Booked'], ['lost', 'Closed']] as const;
 const active = (l: Lead) => l.stage !== 'lost' && l.stage !== 'booked';
 const overdue = (l: Lead) => active(l) && !!l.nextActionAt && new Date(l.nextActionAt) < new Date();
 
@@ -62,23 +63,24 @@ export function Leads({ me, users, initialLeadId, request, onSelect, onRequestHa
   useEffect(() => { onSelect?.(selId); }, [selId]);
   useEffect(() => {
     let cancelled = false;
-    setLoading(true); setLoadError(''); setSelected([]);
+    setLoading(true); setLoadError('');
     const timer = window.setTimeout(async () => {
       try {
         const [r, c] = await Promise.all([
           api<{ items: Lead[]; nextCursor: string | null }>('GET', '/leads' + qs({ ...params, cursor: currentCursor, limit: pageSize })),
           api<Record<string, number>>('GET', '/leads/counts' + qs(params)),
         ]);
-        if (!cancelled) { setItems(r.items); setNextCursor(r.nextCursor); setCounts(c); }
+        if (!cancelled) { setItems(r.items); setSelected(ids=>ids.filter(id=>r.items.some(l=>l.id===id))); setNextCursor(r.nextCursor); setCounts(c); }
       } catch (e) { if (!cancelled) setLoadError(errMsg(e)); }
       finally { if (!cancelled) setLoading(false); }
     }, q ? 250 : 0);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [queryKey, currentCursor, reloadKey]);
+  useEffect(()=>setSelected([]),[queryKey,currentCursor]);
   useEffect(() => { api<{ dispositions: Dispo[] }>('GET', '/meta/pipeline').then((r) => setDispos(r.dispositions)).catch(e => toast(errMsg(e))); }, []);
   useEffect(() => {
     let t: number | undefined;
-    const off = onEvent((e) => { if (e.type.startsWith('lead.') || e.type === 'sla.breached') { clearTimeout(t); t = window.setTimeout(() => setReloadKey((k) => k + 1), 400); } });
+    const off = onEvent((e) => { if(e.type==='lead.access_revoked')setSelId(id=>id===e.data.lead_id?null:id); if(e.type==='sync.required'||e.type.startsWith('lead.') || e.type === 'sla.breached') { clearTimeout(t); t = window.setTimeout(() => setReloadKey((k) => k + 1), 400); } });
     return () => { off(); clearTimeout(t); };
   }, []);
   const sel = items.find((l) => l.id === selId) ?? null;
@@ -120,7 +122,7 @@ export function Leads({ me, users, initialLeadId, request, onSelect, onRequestHa
       else if (!lead) return;
       else if (k === 'd') { e.preventDefault(); setModal('dispo'); }
       else if (k === 'c') { e.preventDefault(); setModal('call'); }
-      else if (k === 'a') { e.preventDefault(); setModal('assign'); }
+      else if (k === 'a' && canAssign) { e.preventDefault(); setModal('assign'); }
     };
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
   }, [move, lead, modal, selId]);
@@ -158,8 +160,8 @@ export function Leads({ me, users, initialLeadId, request, onSelect, onRequestHa
         <label>Assigned to<select aria-label="Assigned to" className="in" value={owner} onChange={e=>setOwner(e.target.value)}><option value="">All agents</option><option value="none">Unassigned</option>{users.map(u=><option key={u.id} value={u.id}>{u.full_name}</option>)}</select></label>
         <label>Temperature<select aria-label="Temperature" className="in" value={temp} onChange={e=>setTemp(e.target.value)}><option value="">All temperatures</option>{['hot','warm','cold'].map(k=><option key={k} value={k}>{k[0].toUpperCase()+k.slice(1)}</option>)}</select></label>
         <label>Stage<select aria-label="Stage" className="in" value={stage} onChange={e=>setStage(e.target.value)}><option value="">All stages</option>{Object.entries(STAGE_LABEL).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
-        <label>Created from<input aria-label="Created from" className="in" type="date" value={createdFrom ? toLocalInput(new Date(createdFrom)).slice(0,10) : ''} onChange={e=>setCreatedFrom(e.target.value?new Date(e.target.value+'T00:00:00').toISOString():'')}/></label>
-        <label>Created through<input aria-label="Created through" className="in" type="date" value={createdTo?toLocalInput(new Date(new Date(createdTo).getTime()-864e5)).slice(0,10):''} onChange={e=>setCreatedTo(e.target.value?new Date(new Date(e.target.value+'T00:00:00').getTime()+864e5).toISOString():'')}/></label>
+        <label>Created from<input aria-label="Created from" className="in" type="date" value={createdFrom?dateInZone(createdFrom,me.timezone):''} onChange={e=>setCreatedFrom(e.target.value?dateStartInZone(e.target.value,me.timezone):'')}/></label>
+        <label>Created through<input aria-label="Created through" className="in" type="date" value={createdTo?dateInZone(new Date(new Date(createdTo).getTime()-1).toISOString(),me.timezone):''} onChange={e=>setCreatedTo(e.target.value?dateStartInZone(nextDate(e.target.value),me.timezone):'')}/></label>
       </div>}
       <div className="results-toolbar"><span>{loading?'Loading leads…':`${count} ${count===1?'lead':'leads'} in this view`}{filterCount>0&&<button className="text-button" onClick={clearFilters}>Clear filters</button>}</span><label>Sort by <select value={sort} onChange={e=>setSort(e.target.value)} aria-label="Sort leads"><option value="updated">Recently updated</option><option value="created">Recently created</option><option value="next_action">Next follow-up</option><option value="score">Lead score</option></select></label></div>
       {selected.length>0&&<div className="bulk-toolbar"><b>{selected.length} selected</b>{canAssign&&<><select className="in" aria-label="Bulk assign to" value={bulkOwner} onChange={e=>setBulkOwner(e.target.value)}><option value="">Assign to…</option><option value="none">Unassigned pool</option>{users.filter(u=>u.is_active).map(u=><option key={u.id} value={u.id}>{u.full_name}</option>)}</select><button className="btn primary sm" disabled={busy||!bulkOwner} onClick={assignSelected}>{busy?'Assigning…':'Assign leads'}</button></>}<button className="text-button" onClick={()=>setSelected([])}>Clear selection</button></div>}
@@ -192,14 +194,16 @@ function Workspace({ lead, me, userName, onBack, onAction, refresh }: { lead: Le
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}><span className={`pill ${lead.temperature}`}>{lead.temperature} · {lead.score}</span><span className={`st st-${lead.stage}`}>{STAGE_LABEL[lead.stage]}{lead.subStatus ? ` · ${lead.subStatus}` : ''}</span></div>
       </div>
       <div className="qbar">
+        {lead.ownerId===me.id&&!lead.acknowledgedAt&&<button className="btn" onClick={async()=>{try{await api('POST',`/leads/${lead.id}/acknowledge`,{});toast('Lead receipt acknowledged');refresh();}catch(e){toast(errMsg(e));}}}>Acknowledge receipt</button>}
         <button className="btn primary" onClick={() => onAction('dispo')}>Update status <kbd>D</kbd></button>
         <button className="btn" onClick={() => onAction('call')}>Log call <kbd>C</kbd></button>
         {wa && <a className="btn" href={`https://wa.me/${wa}`} target="_blank" rel="noopener noreferrer">WhatsApp ↗</a>}
-        <button className="btn" onClick={() => onAction('assign')}>Assign <kbd>A</kbd></button>
+        {['owner','admin','manager'].includes(me.role)&&<button className="btn" onClick={() => onAction('assign')}>Assign <kbd>A</kbd></button>}
         <span className="muted" style={{ alignSelf: 'center', fontSize: 12.5, marginLeft: 'auto' }}>Owner: <b>{userName(lead.ownerId)}</b>{lead.nextActionAt && active(lead) ? <> · Next: <span className={overdue(lead) ? 'due-over' : ''}>{dt(lead.nextActionAt)}</span></> : null}</span>
       </div>
       <div className="tabs">{(['timeline', 'details', 'matches', 'messages'] as const).map((t) => <button key={t} className="tab" aria-selected={tab === t} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>)}</div>
     </div>
+    {lead.routingMode==='listing'&&<div className={`routing-context ${lead.ownerId?'':'pending'}`}><Icon name="shield" size={16}/><span><b>{lead.listingRef||'Listing reference missing'}</b> · {lead.ownerId?'Assigned CRM responsibility':'Awaiting administrator ownership review'}<small>{lead.routingNote}</small></span></div>}
     <div className="wscroll">
       {tab === 'timeline' && <Timeline lead={lead} />}
       {tab === 'details' && <Details lead={lead} userName={userName} onSaved={refresh} />}
@@ -274,7 +278,7 @@ function Matches({ lead, onShared }: { lead: Lead; onShared: () => void }) {
   return (<>
     {share && <div className="card" style={{ padding: 14, marginBottom: 12 }}><b>Message ready</b><pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>{share.message}</pre>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{wa && <a className="btn primary sm" target="_blank" rel="noopener noreferrer" href={`https://wa.me/${wa}?text=${encodeURIComponent(share.message)}`}
-        onClick={() => api('POST', `/leads/${lead.id}/messages`, { body: share.message, mode: 'log' }).then(onShared)}>Open in WhatsApp ↗</a>}
+        >Open in WhatsApp ↗</a>}
         <button className="btn sm" onClick={() => navigator.clipboard?.writeText(share.message).then(() => toast('Copied'))}>Copy</button></div></div>}
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}><span className="muted">{m.length} matching units. Tick up to 5 to share a tracked link.</span><span style={{ flex: 1 }} /><button className="btn primary sm" disabled={!pick.length} onClick={doShare}>Share {pick.length || ''}</button></div>
     <div className="card"><div className="bd" style={{ paddingTop: 4 }}>{m.map(({ property: p, score, reasons }) => (
@@ -285,26 +289,27 @@ function Matches({ lead, onShared }: { lead: Lead; onShared: () => void }) {
   </>);
 }
 
-export function Messages({ lead }: { lead: { id: string; phone: string | null; name: string }; me?: Me }) {
-  const [msgs, setMsgs] = useState<any[]>([]); const [body, setBody] = useState('');
-  const load = useCallback(() => api<any[]>('GET', `/leads/${lead.id}/messages`).then(setMsgs).catch(() => {}), [lead.id]);
-  useEffect(() => { load(); return onEvent((e) => { if (e.data?.lead_id === lead.id && e.type.startsWith('message.')) load(); }); }, [load, lead.id]);
-  const send = async (mode: 'send' | 'log', direction: 'outbound' | 'inbound' = 'outbound') => {
-    if (!body.trim()) return toast('Type a message first.');
-    try { await api('POST', `/leads/${lead.id}/messages`, { body, mode, direction }); setBody(''); load(); } catch (e) { toast(errMsg(e)); }
+export function Messages({lead}:{lead:{id:string;phone:string|null;name:string};me?:Me}){
+  const [msgs,setMsgs]=useState<any[]>([]),[body,setBody]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  const [templateMode,setTemplateMode]=useState(false),[templateName,setTemplateName]=useState(''),[language,setLanguage]=useState('en'),[variables,setVariables]=useState('');
+  const requestId=useRef(crypto.randomUUID());
+  const load=useCallback(()=>api<any[]>('GET',`/leads/${lead.id}/messages`).then(setMsgs).catch(e=>setError(errMsg(e))),[lead.id]);
+  useEffect(()=>{load();return onEvent(e=>{if(e.type==='sync.required'||(e.data?.lead_id===lead.id&&e.type.startsWith('message.')))load();});},[load,lead.id]);
+  const send=async(mode:'send'|'log',direction:'outbound'|'inbound'='outbound')=>{
+    if(busy)return;if(!body.trim()&&!(mode==='send'&&templateMode&&templateName.trim()))return setError('Enter a message or an approved template.');
+    setBusy(true);setError('');
+    try{const result=await api('POST',`/leads/${lead.id}/messages`,{body,mode,direction,clientRequestId:requestId.current,...(mode==='send'&&templateMode?{template:{name:templateName.trim(),lang:language.trim()||'en',vars:variables.split('\n').map(v=>v.trim()).filter(Boolean)}}:{})});
+      setBody('');requestId.current=crypto.randomUUID();load();toast(result.status==='queued'?'Message queued for provider delivery':'Message recorded');
+    }catch(e){setError(errMsg(e));}finally{setBusy(false);}
   };
-  const wa = (lead.phone ?? '').replace(/\D/g, '');
-  return (<div>
-    <div className="msgs" style={{ padding: '0 0 12px' }}>{msgs.map((m) => <div key={m.id} className={`msg ${m.direction === 'inbound' ? 'in' : 'out'}`}>{m.body}<div className="m">{m.direction === 'inbound' ? lead.name.split(' ')[0] : m.sent_by_name} · {dt(m.created_at)} · {m.status}</div></div>)}
-      {!msgs.length && <p className="muted">No messages yet.</p>}</div>
-    <div className="wacomp" style={{ border: '1px solid var(--line)', borderRadius: 10 }}>
-      <textarea className="in" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Type a message" aria-label="Message" />
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        <button className="btn primary sm" onClick={() => send('send')}>Send via WhatsApp API</button>
-        {wa && <a className="btn sm" href={`https://wa.me/${wa}?text=${encodeURIComponent(body)}`} target="_blank" rel="noopener noreferrer" onClick={() => send('log')}>Open in WhatsApp ↗ (logs it)</a>}
-        <button className="btn sm" onClick={() => send('log', 'inbound')}>Log their reply</button>
-      </div></div>
-  </div>);
+  const wa=(lead.phone??'').replace(/\D/g,'');
+  return <div><div className="msgs" style={{padding:'0 0 12px'}}>{msgs.map(m=><div key={m.id} className={`msg ${m.direction==='inbound'?'in':'out'}`}>{m.body||m.template_name&&`Template: ${m.template_name}`}<div className="m">{m.direction==='inbound'?lead.name.split(' ')[0]:m.sent_by_name} · {dt(m.created_at)} · <b>{m.status.replace('_',' ')}</b></div>{m.delivery_error&&<p className="err">{m.delivery_error}</p>}</div>)}{!msgs.length&&<p className="muted">No messages yet.</p>}</div>
+    <div className="wacomp" style={{border:'1px solid var(--line)',borderRadius:10}}><textarea className="in" value={body} onChange={e=>{setBody(e.target.value);requestId.current=crypto.randomUUID();}} placeholder="Type a message" aria-label="Message" maxLength={4096}/>
+      <label className="switch"><input type="checkbox" checked={templateMode} onChange={e=>setTemplateMode(e.target.checked)}/>Use an approved WhatsApp template</label>
+      {templateMode&&<div className="grid2"><label className="field">Approved template name<input className="in" value={templateName} onChange={e=>{setTemplateName(e.target.value);requestId.current=crypto.randomUUID();}}/></label><label className="field">Language code<input className="in" value={language} onChange={e=>{setLanguage(e.target.value);requestId.current=crypto.randomUUID();}}/></label><label className="field">Template variables (one per line)<textarea className="in" value={variables} onChange={e=>{setVariables(e.target.value);requestId.current=crypto.randomUUID();}}/></label></div>}
+      <div className="row-actions"><button className="btn primary sm" disabled={busy} onClick={()=>send('send')}>{busy?'Please wait…':'Queue WhatsApp delivery'}</button>{wa&&<a className="btn sm" href={`https://wa.me/${wa}?text=${encodeURIComponent(body)}`} target="_blank" rel="noopener noreferrer">Open WhatsApp</a>}<button className="btn sm" disabled={busy} onClick={()=>send('log')}>Log message sent</button><button className="btn sm" disabled={busy} onClick={()=>send('log','inbound')}>Log their reply</button></div>
+      <p className="modal-explanation">Opening WhatsApp does not record a sent message. Log it after sending. Provider delivery requires a verified reply window or an approved template.</p>{error&&<p role="alert" className="err">{error}</p>}
+    </div></div>;
 }
 
 function useDialog<T extends HTMLElement>(onClose: () => void) {
@@ -401,14 +406,14 @@ function AssignModal({ lead, users, me, onClose, onSaved }: { lead: Lead; users:
 
 function NewLeadModal({ users, onClose, onSaved }: { users: User[]; onClose: () => void; onSaved: (id: string) => void }) {
   const dialogRef = useDialog<HTMLFormElement>(onClose);
-  const [f, setF] = useState({ name: '', phone: '', email: '', source: 'bayut', subSource: '', owner: 'auto', budgetMax: '', beds: '', type: '', community: '', note: '' });
+  const [f, setF] = useState({ name: '', phone: '', email: '', source: 'bayut', subSource: '', owner:'auto',listingRef:'',budgetMax: '', beds: '', type: '', community: '', note: '' });
   const [err, setErr] = useState('');
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
   const save = async (e: React.FormEvent) => {
     e.preventDefault(); setErr('');
     try {
       const r = await api<{ lead: Lead; reenquiry: boolean }>('POST', '/leads', {
-        name: f.name, phone: f.phone || null, email: f.email || null, source: f.source, subSource: f.subSource || null, note: f.note || null,
+        name:f.name,listingRef:f.listingRef||null,phone: f.phone || null, email: f.email || null, source: f.source, subSource: f.subSource || null, note: f.note || null,
         ownerId: f.owner === 'auto' ? 'auto' : f.owner || null,
         requirements: { budgetMax: f.budgetMax ? Number(f.budgetMax) : null, beds: f.beds === '' ? null : Number(f.beds), types: f.type ? [f.type] : [], communities: f.community ? [f.community] : [] },
       });
@@ -422,7 +427,7 @@ function NewLeadModal({ users, onClose, onSaved }: { users: User[]; onClose: () 
         <div className="field"><label>Phone</label><input aria-label="Phone" className="in" value={f.phone} onChange={set('phone')} placeholder="+971 50 123 4567" /></div>
         <div className="field"><label>Email</label><input aria-label="Email" className="in" type="email" value={f.email} onChange={set('email')} /></div>
         <div className="field"><label>Source</label><select aria-label="Source" className="in" value={f.source} onChange={set('source')}>{Object.entries(SOURCES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
-        <div className="field"><label>Sub-source</label><input aria-label="Sub-source" className="in" value={f.subSource} onChange={set('subSource')} /></div>
+        <div className="field"><label>Portal listing reference</label><input className="in" aria-label="Portal listing reference" value={f.listingRef} onChange={set('listingRef')} placeholder="Routes to the mapped responsible agent"/></div><div className="field"><label>Sub-source</label><input aria-label="Sub-source" className="in" value={f.subSource} onChange={set('subSource')} /></div>
         <div className="field"><label>Assign to</label><select aria-label="Assign to" className="in" value={f.owner} onChange={set('owner')}><option value="auto">Auto-assign by rules</option><option value="">Unassigned</option>{users.filter((u) => u.is_active).map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}</select></div>
         <div className="field"><label>Budget up to (AED)</label><input aria-label="Budget up to (AED)" className="in" type="number" value={f.budgetMax} onChange={set('budgetMax')} /></div>
         <div className="field"><label>Bedrooms</label><input aria-label="Bedrooms" className="in" type="number" min={0} value={f.beds} onChange={set('beds')} /></div>

@@ -1,0 +1,25 @@
+{
+  "checks": [
+    "dashboard metrics drill through to the matching lead table",
+    "next and previous pages show all 13 leads",
+    "lead search refreshes rows and filtered counts",
+    "source and local-date filters update results and reset correctly",
+    "column visibility persists after a reload",
+    "CSV exports every matching page with protected phone cells",
+    "bulk assignment persists through the real API",
+    "status update schedules a real follow-up and saves a timeline note",
+    "lead detail links survive a page reload",
+    "Save & next advances the lead drawer through the queue",
+    "call logging persists into the lead timeline",
+    "global search works while already on the leads screen",
+    "new-lead creation persists and its dialog does not reopen on navigation",
+    "live events refresh the table without a manual reload",
+    "all six workspace modules remain navigable",
+    "mobile and tablet layouts, horizontal table scrolling and lead drawer work",
+    "dashboard errors are visible and recover through retry",
+    "a startup service outage displays retry and restores the existing session",
+    "no uncaught browser JavaScript errors"
+  ],
+  "passed": 19,
+  "page_errors": []
+}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { getToken } from './api';
+
 
 export interface RtEvent { seq: number; type: string; data: any; ts: string }
 type Handler = (e: RtEvent) => void;
@@ -11,12 +11,13 @@ const subscriptions = new Map<string, number>();
 export const isConnected = () => !!socket?.connected;
 
 export function connectRealtime() {
-  if (socket || !getToken()) return;
-  socket = io({ path: '/ws', auth: { token: getToken() }, transports: ['websocket'] });
+  if(socket)return;
+  socket=io({path:'/ws',withCredentials:true,transports:['websocket']});
   socket.on('event', (e: RtEvent) => handlers.forEach(h => h(e)));
   socket.on('connect', () => {
     subscriptions.forEach((_, id) => socket?.emit('lead:subscribe', id));
-    connectionHandlers.forEach(h => h(true));
+    connectionHandlers.forEach(h=>h(true));
+    handlers.forEach(h=>h({seq:0,type:'sync.required',data:{},ts:new Date().toISOString()}));
   });
   socket.on('disconnect', () => connectionHandlers.forEach(h => h(false)));
 }
@@ -36,3 +37,5 @@ export function useRealtimeStatus() {
   useEffect(() => { connectionHandlers.add(setConnected); setConnected(isConnected()); return () => { connectionHandlers.delete(setConnected); }; }, []);
   return connected;
 }
+
+export function disconnectRealtime(){socket?.disconnect();socket=null;subscriptions.clear();connectionHandlers.forEach(h=>h(false));}

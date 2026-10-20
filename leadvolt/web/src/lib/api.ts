@@ -2,20 +2,17 @@ export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public details?: unknown) { super(message); }
 }
 
-let token: string | null = localStorage.getItem('lv_token');
-export const getToken = () => token;
-export function setToken(t: string | null) {
-  token = t;
-  if (t) localStorage.setItem('lv_token', t); else localStorage.removeItem('lv_token');
-}
+// Authentication lives in an HttpOnly cookie. Browser storage contains no bearer credentials.
+localStorage.removeItem('lv_token');
+export function setToken(_token:string|null){localStorage.removeItem('lv_token');}
 
 export async function api<T = any>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
   const res = await fetch(`/api/v1${path}`, {
-    method,
-    headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
+    method,credentials:'same-origin',
+    headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(!['GET','HEAD','OPTIONS'].includes(method)?{'X-LeadVolt-CSRF':'1'}:{}), ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401 && token) { setToken(null); location.reload(); }
+  if(res.status===401&&!['/me','/auth/login','/auth/register'].includes(path)){setToken(null);window.dispatchEvent(new Event('lv:session-ended'));}
   if (res.status === 204) return undefined as T;
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, json.error ?? 'error', json.message ?? 'Request failed', json.details);
@@ -28,3 +25,5 @@ export const qs = (o: Record<string, unknown>) => {
   const s = p.toString();
   return s ? `?${s}` : '';
 };
+
+export async function signOut(){await api('POST','/auth/logout',{});setToken(null);location.reload();}

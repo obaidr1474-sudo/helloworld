@@ -1,24 +1,26 @@
+import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { q, withSystem, withTenant } from '../lib/db.js';
 import { config } from '../lib/config.js';
-import { HttpError, notFound } from '../lib/errors.js';
-import { actorOf, authenticate, parse, requireRole } from '../lib/http.js';
+import { badRequest,HttpError, notFound } from '../lib/errors.js';
+import { actorOf, authenticate, parse,requireRole,ifMatch } from '../lib/http.js';
 import { createTask, listTasks, setTaskStatus } from '../services/tasks.js';
 import { matchingLeads, upsertProperty } from '../services/properties.js';
 import { overview } from '../services/analytics.js';
 import { inbox, recordInbound, verifyMetaSignature } from '../services/messages.js';
+import {recordMessageReceipt} from '../services/receipts.js';
 import { openShareLink } from '../services/share.js';
-import { normalizeIntake, verifyIntake, type AdapterName } from '../services/intake.js';
+import { normalizeIntake,receiveEnquiry,verifyIntakeV2,verifyIntake, type AdapterName } from '../services/intake.js';
 import { createOrReenquire } from '../services/leads.js';
 import { allocate, type Rule } from '../domain/allocation.js';
 
 const propertySchema = z.object({
   reference: z.string().optional(), projectName: z.string().min(1), developer: z.string().optional(), community: z.string().min(1),
   subCommunity: z.string().optional(), offeringType: z.enum(['ready', 'off_plan']), purpose: z.enum(['sale', 'rent']).optional(),
-  propertyType: z.string().min(1), beds: z.number().int().min(0), baths: z.number().int().min(0).optional(), areaSqft: z.number().min(0).optional(),
-  price: z.number().positive(), handover: z.string().optional(), status: z.enum(['available', 'reserved', 'sold', 'rented', 'off_market']).optional(),
-  permitNumber: z.string().optional(), brochureUrl: z.string().url().optional().or(z.literal('')), notes: z.string().optional(),
+  propertyType: z.string().min(1), beds: z.number().int().min(0), baths: z.number().int().min(0).optional(), areaSqft:z.number().finite().min(0).max(1e9).optional(),
+  price:z.number().finite().positive().max(1e12), handover: z.string().optional(), status: z.enum(['available', 'reserved', 'sold', 'rented', 'off_market']).optional(),
+  permitNumber: z.string().optional(), brochureUrl:z.string().url().refine(v=>/^https?:\/\//i.test(v),'Use an HTTP or HTTPS URL.').optional().or(z.literal('')), notes: z.string().optional(),
   portalRefs: z.record(z.string()).optional(),
 });
 
@@ -81,7 +83,7 @@ export async function appRoutes(app: FastifyInstance) {
     });
     r.put('/properties/:id', async (req) => {
       const a = actorOf(req); const { id } = req.params as { id: string }; const b = parse(propertySchema, req.body);
-      return withTenant(a.tenantId, (tx) => upsertProperty(tx, a, { ...b, brochureUrl: b.brochureUrl || undefined }, id));
+      return withTenant(a.tenantId, (tx) => upsertProperty(tx, a, { ...b, brochureUrl:b.brochureUrl||undefined},id,ifMatch(req)));
     });
     r.get('/properties/:id/matching-leads', async (req) => {
       const a = actorOf(req); const { id } = req.params as { id: string };
@@ -137,6 +139,13 @@ export async function appRoutes(app: FastifyInstance) {
       });
     });
 
+    r.post('/settings/intake-secret/reveal',{preHandler:requireRole('owner','admin')},async(req)=>{
+      const a=actorOf(req);return withTenant(a.tenantId,async tx=>{const t=(await tx.query('SELECT intake_secret FROM tenants WHERE id=$1',[a.tenantId])).rows[0];await import('../lib/events.js').then(m=>m.audit(tx,a.tenantId,a.id,'tenant',a.tenantId,'intake_secret.reveal'));return {secret:t.intake_secret};});
+    });
+    r.post('/settings/intake-secret/rotate',{preHandler:requireRole('owner','admin')},async(req)=>{
+      const a=actorOf(req);parse(z.object({confirm:z.literal('rotate')}),req.body);
+      return withTenant(a.tenantId,async tx=>{const t=(await tx.query(`UPDATE tenants SET intake_secret=encode(gen_random_bytes(24),'hex') WHERE id=$1 RETURNING intake_secret`,[a.tenantId])).rows[0];await import('../lib/events.js').then(m=>m.audit(tx,a.tenantId,a.id,'tenant',a.tenantId,'intake_secret.rotate'));return {secret:t.intake_secret};});
+    });
     r.patch('/settings', { preHandler: requireRole('owner', 'admin') }, async (req) => {
       const a = actorOf(req);
       const b = parse(z.object({
@@ -148,7 +157,7 @@ export async function appRoutes(app: FastifyInstance) {
     });
     r.get('/settings', { preHandler: requireRole('owner', 'admin') }, async (req) => {
       const a = actorOf(req);
-      const { rows: [t] } = await q(`SELECT name, slug, default_currency, timezone, settings, intake_secret FROM tenants WHERE id = $1`, [a.tenantId]);
+      const { rows: [t] } = await q(`SELECT name,slug,default_currency,timezone,settings,true AS intake_secret_configured FROM tenants WHERE id = $1`, [a.tenantId]);
       return t;
     });
   });
@@ -157,16 +166,28 @@ export async function appRoutes(app: FastifyInstance) {
   app.post('/intake/:adapter', async (req, reply) => {
     const { adapter } = req.params as { adapter: AdapterName };
     if (!['generic', 'portal', 'ivr', 'web_form'].includes(adapter)) throw notFound('Intake adapter');
-    const slug = String(req.headers['x-leadvolt-workspace'] ?? '');
-    const t = (await q(`SELECT id, intake_secret, settings FROM tenants WHERE slug = $1`, [slug])).rows[0];
-    if (!t || !verifyIntake(t.intake_secret, req.rawBody ?? '', req.headers['x-leadvolt-signature'] as string | undefined)) {
-      throw new HttpError(401, 'invalid_signature', 'Unknown workspace or bad signature.');
+    const slug=String(req.headers['x-leadvolt-workspace']??'');
+    const source=parse(z.string().regex(/^[a-z0-9_]{1,50}$/).optional(),(req.query as {source?:string}).source);
+    if(adapter==='portal'&&!source)throw badRequest('Specify the portal source for this intake endpoint.');
+    const t=(await q('SELECT id,intake_secret,settings FROM tenants WHERE slug=$1',[slug])).rows[0];
+    const signature=req.headers['x-leadvolt-signature'] as string|undefined;
+    const timestamp=req.headers['x-leadvolt-timestamp'] as string|undefined;
+    const verified=t&&(timestamp?verifyIntakeV2(t.intake_secret,req.rawBody??'',source??adapter,timestamp,signature):config.allowLegacyIntake&&verifyIntake(t.intake_secret,req.rawBody??'',signature));
+    if(!verified) throw new HttpError(401,'invalid_signature','Unknown workspace, stale delivery timestamp or bad signature.');
+    let input:ReturnType<typeof normalizeIntake>|undefined;
+    try {
+      parse(z.record(z.unknown()),req.body);
+      input=normalizeIntake(adapter,source,req.body,t.settings?.intake_field_maps?.[source??adapter]);
+      const eventId=input.providerEventId??(req.headers['x-leadvolt-event-id'] as string|undefined);
+      if(config.production&&adapter==='portal'&&!input.providerEventId) throw badRequest('Include a stable provider event ID inside the signed portal payload.');
+      const hash=crypto.createHash('sha256').update(req.rawBody??'').digest('hex');
+      const r=await withTenant(t.id,tx=>receiveEnquiry(tx,{id:null,tenantId:t.id,role:'system'},input!,adapter,eventId,hash));
+      reply.code(r.created?201:200);
+      return {leadId:r.lead.id,serialNo:r.lead.serialNo,created:r.created,reenquiry:r.reenquiry,ownerId:r.lead.ownerId,duplicate:r.duplicate,routingStatus:r.lead.routingStatus};
+    } catch(error) {
+      await withTenant(t.id,tx=>tx.query(`INSERT INTO integration_events(tenant_id,source,adapter,status,listing_ref,error_code,summary) VALUES($1,$2,$3,'rejected',$4,$5,$6)`,[t.id,source??adapter,adapter,input?.listingRef??null,error instanceof HttpError?error.code:'processing_error',error instanceof HttpError?error.message.slice(0,300):'Enquiry processing failed; sender should retry after correction']));
+      throw error;
     }
-    const source = (req.query as { source?: string }).source;
-    const input = normalizeIntake(adapter, source, req.body, t.settings?.intake_field_maps?.[source ?? adapter]);
-    const r = await withTenant(t.id, (tx) => createOrReenquire(tx, { id: null, tenantId: t.id, role: 'system' }, { ...input, ownerId: 'auto' }));
-    reply.code(r.created ? 201 : 200);
-    return { leadId: r.lead.id, serialNo: r.lead.serialNo, created: r.created, reenquiry: r.reenquiry, ownerId: r.lead.ownerId };
   });
 
   // ------------------------------------------------ public: WhatsApp Cloud API webhook
@@ -184,18 +205,17 @@ export async function appRoutes(app: FastifyInstance) {
       for (const change of entry.changes ?? []) {
         const v = change.value ?? {};
         const pnid = v.metadata?.phone_number_id;
-        const t = (await q(`SELECT id FROM tenants WHERE settings->>'wa_phone_number_id' = $1`, [pnid])).rows[0];
+        const t = (await q(`SELECT id FROM tenants WHERE settings->>'wa_phone_number_id'=$1 AND ($2::text='' OR slug=$2)`,[pnid,config.whatsapp.workspace])).rows[0];
         if (!t) continue;
         const names = Object.fromEntries((v.contacts ?? []).map((c: any) => [c.wa_id, c.profile?.name]));
         for (const m of v.messages ?? []) {
           const text = m.text?.body ?? m.button?.text ?? m.interactive?.button_reply?.title ?? `[${m.type} message]`;
           await withTenant(t.id, async (tx) => {
-            const lead = (await tx.query(`SELECT id FROM leads WHERE tenant_id = $1 AND phone_e164 = $2 AND deleted_at IS NULL`, [t.id, '+' + m.from])).rows[0];
-            await recordInbound(tx, { id: null, tenantId: t.id, role: 'system' }, { phone: '+' + m.from, name: names[m.from], body: text, providerId: m.id, leadId: lead?.id });
+            await recordInbound(tx, { id: null, tenantId: t.id, role: 'system' }, { phone: '+' + m.from, name: names[m.from], body: text, providerId:m.id });
           });
         }
         for (const s of v.statuses ?? []) {
-          await withTenant(t.id, (tx) => tx.query(`UPDATE messages SET status = $3 WHERE tenant_id = $1 AND provider_id = $2`, [t.id, s.id, s.status]));
+          await withTenant(t.id, tx=>recordMessageReceipt(tx,t.id,s));
         }
       }
     }
@@ -210,7 +230,7 @@ export async function appRoutes(app: FastifyInstance) {
     const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
     const cards = r.properties.map((p: any) => `<article><h2>${esc(p.project_name)}</h2><p>${esc(p.community)} · ${p.beds === 0 ? 'Studio' : esc(p.beds) + ' BR'} ${esc(p.property_type)}${p.area_sqft ? ' · ' + Number(p.area_sqft).toLocaleString('en-AE') + ' sq ft' : ''}</p>
       <p class="price">${esc(p.currency)} ${Number(p.price).toLocaleString('en-AE')}</p>${p.offering_type === 'off_plan' && p.handover ? `<p>Off-plan · handover ${esc(p.handover)}</p>` : ''}
-      ${p.notes ? `<p>${esc(p.notes)}</p>` : ''}${p.brochure_url ? `<a href="${esc(p.brochure_url)}" rel="noopener">Download brochure</a>` : ''}</article>`).join('');
+      ${p.brochure_url&&/^https?:\/\//i.test(p.brochure_url)?`<a href="${esc(p.brochure_url)}" rel="noopener">Download brochure</a>` : ''}</article>`).join('');
     reply.type('text/html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(r.tenantName)}</title>
       <style>body{font-family:system-ui,sans-serif;margin:0;padding:20px 16px;background:#f3f5f8;color:#121826}main{max-width:640px;margin:auto}article{background:#fff;border:1px solid #dce1e8;border-radius:10px;padding:16px;margin:12px 0}h1{font-size:20px}h2{font-size:17px;margin:0 0 6px}.price{font-weight:700;font-size:18px}a{color:#1d5fd0}</style></head>
       <body><main><h1>Properties selected for you by ${esc(r.tenantName)}</h1>${cards}</main></body></html>`);

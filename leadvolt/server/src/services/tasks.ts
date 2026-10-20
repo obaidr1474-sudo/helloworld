@@ -6,6 +6,7 @@ import { addInteraction, assertCanWrite, isManager, loadLead, type Actor } from 
 export interface TaskInput { leadId?: string | null; assigneeId?: string; type: string; title: string; notes?: string; dueAt: string; priority?: number; propertyId?: string | null }
 
 export async function createTask(tx: Tx, actor: Actor, t: TaskInput) {
+  if(!isManager(actor)&&actor.role!=='agent') throw forbidden('Your role cannot create tasks.');
   const due = new Date(t.dueAt);
   if (Number.isNaN(due.getTime())) throw badRequest('The due date is not valid.');
   const assignee = t.assigneeId ?? actor.id;
@@ -27,15 +28,18 @@ export async function createTask(tx: Tx, actor: Actor, t: TaskInput) {
 
 export async function setTaskStatus(tx: Tx, actor: Actor, id: string, status: 'open' | 'done' | 'cancelled', outcome?: string) {
   const { rows: [task] } = await tx.query(`SELECT * FROM tasks WHERE tenant_id = $1 AND id = $2 FOR UPDATE`, [actor.tenantId, id]);
-  if (!task) throw notFound('Task');
+  if(!task) throw notFound('Task');
+  if(!isManager(actor)&&actor.role!=='agent') throw forbidden('Your role cannot update tasks.');
+  if(task.lead_id) assertCanWrite(actor,await loadLead(tx,actor.tenantId,task.lead_id,true));
   if (task.assignee_id !== actor.id && !isManager(actor)) throw forbidden('This task belongs to another agent.');
+  if(task.status===status)return task;
   const { rows: [u] } = await tx.query(
     `UPDATE tasks SET status = $3, completed_at = CASE WHEN $3 = 'done' THEN now() ELSE NULL END, outcome = COALESCE($4, outcome), updated_at = now()
       WHERE tenant_id = $1 AND id = $2 RETURNING *`, [actor.tenantId, id, status, outcome ?? null]);
   if (task.lead_id) {
     // next_action_at mirrors the earliest open task
     await tx.query(`UPDATE leads SET next_action_at = (SELECT min(due_at) FROM tasks WHERE tenant_id = $1 AND lead_id = $2 AND status = 'open'),
-                    updated_at = now(), version = version + 1 WHERE tenant_id = $1 AND id = $2`, [actor.tenantId, task.lead_id]);
+                    last_agent_update_at=CASE WHEN owner_id=$3 AND $4='done' THEN now() ELSE last_agent_update_at END,updated_at=now(),version=version+1 WHERE tenant_id=$1 AND id=$2`,[actor.tenantId,task.lead_id,actor.id,status]);
     if (status === 'done') await addInteraction(tx, actor.tenantId, task.lead_id, actor.id, 'task', `Task done: ${task.title}${outcome ? '\n' + outcome : ''}`, { direction: 'internal' });
   }
   await emit(tx, actor.tenantId, 'task.updated', { task_id: id, lead_id: task.lead_id ?? undefined, owner_id: task.assignee_id, status });
@@ -44,8 +48,8 @@ export async function setTaskStatus(tx: Tx, actor: Actor, id: string, status: 'o
 
 export async function listTasks(tx: Tx, actor: Actor, p: { queue?: 'overdue' | 'today' | 'upcoming' | 'done'; assigneeId?: string; leadId?: string; tz?: string }) {
   const where = ['t.tenant_id = $1']; const vals: unknown[] = [actor.tenantId];
-  const tz = p.tz ?? 'Asia/Dubai';
-  if (!isManager(actor)) { vals.push(actor.id); where.push(`t.assignee_id = $${vals.length}`); }
+  const tz=p.tz??(await tx.query('SELECT timezone FROM tenants WHERE id=$1',[actor.tenantId])).rows[0].timezone;
+  if (!isManager(actor)) { vals.push(actor.id); where.push(`t.assignee_id = $${vals.length} AND (t.lead_id IS NULL OR l.owner_id=$${vals.length})`); }
   else if (p.assigneeId) { vals.push(p.assigneeId); where.push(`t.assignee_id = $${vals.length}`); }
   if (p.leadId) { vals.push(p.leadId); where.push(`t.lead_id = $${vals.length}`); }
   const endOfToday = () => { vals.push(tz); const tzp = `$${vals.length}`; return `((date_trunc('day', now() AT TIME ZONE ${tzp}) + interval '1 day') AT TIME ZONE ${tzp})`; };

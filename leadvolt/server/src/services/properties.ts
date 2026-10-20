@@ -1,6 +1,7 @@
+import crypto from 'node:crypto';
 import type { Tx } from '../lib/db.js';
 import { emit, audit } from '../lib/events.js';
-import { forbidden, notFound } from '../lib/errors.js';
+import { forbidden,notFound,preconditionFailed } from '../lib/errors.js';
 import { matchProperty } from '../domain/matching.js';
 import { isManager, type Actor } from './leads.js';
 
@@ -13,20 +14,21 @@ export interface PropertyInput {
 
 const canEditInventory = (a: Actor) => isManager(a) || a.role === 'listing_manager';
 
-export async function upsertProperty(tx: Tx, actor: Actor, input: PropertyInput, id?: string) {
+export async function upsertProperty(tx: Tx, actor: Actor, input:PropertyInput,id?:string,expectedVersion?:number) {
   if (!canEditInventory(actor)) throw forbidden('Only managers and listing managers can change inventory.');
-  const ref = input.reference || `LV-${Date.now().toString(36).toUpperCase()}`;
+  const ref = input.reference || `LV-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
   const cols = [ref, input.projectName, input.developer ?? null, input.community, input.subCommunity ?? null, input.offeringType,
     input.purpose ?? 'sale', input.propertyType, input.beds, input.baths ?? null, input.areaSqft ?? null, input.price, input.handover ?? null,
     input.status ?? 'available', input.permitNumber ?? null, input.brochureUrl ?? null, input.notes ?? null, input.portalRefs ?? {}];
   let row;
   if (id) {
-    const old = (await tx.query(`SELECT price, status FROM properties WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE`, [actor.tenantId, id])).rows[0];
-    if (!old) throw notFound('Property');
+    const old = (await tx.query(`SELECT price,status,version FROM properties WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE`, [actor.tenantId, id])).rows[0];
+    if(!old)throw notFound('Property');
+    if(expectedVersion===undefined||expectedVersion!==old.version)throw preconditionFailed('This property changed. Reload it before saving.');
     row = (await tx.query(
       `UPDATE properties SET reference=$3, project_name=$4, developer=$5, community=$6, sub_community=$7, offering_type=$8, purpose=$9,
          property_type=$10, beds=$11, baths=$12, area_sqft=$13, price=$14, handover=$15, status=$16, permit_number=$17, brochure_url=$18,
-         notes=$19, portal_refs=$20, updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING *`, [actor.tenantId, id, ...cols])).rows[0];
+         notes=$19,portal_refs=$20,updated_at=now(),version=version+1 WHERE tenant_id=$1 AND id=$2 RETURNING *`, [actor.tenantId, id, ...cols])).rows[0];
     await emit(tx, actor.tenantId, 'property.updated', { property_id: id, price_dropped: Number(row.price) < Number(old.price) });
     if (Number(row.price) < Number(old.price) || (old.status !== 'available' && row.status === 'available')) await reverseMatch(tx, actor.tenantId, row);
   } else {
@@ -57,7 +59,7 @@ export async function reverseMatch(tx: Tx, tenantId: string, property: any, thre
 export async function matchingLeads(tx: Tx, actor: Actor, propertyId: string) {
   const p = (await tx.query(`SELECT * FROM properties WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, [actor.tenantId, propertyId])).rows[0];
   if (!p) throw notFound('Property');
-  const scope = isManager(actor) ? '' : 'AND (owner_id = $2 OR owner_id IS NULL)';
+  const scope = isManager(actor) ? '' : 'AND owner_id = $2';
   const { rows } = await tx.query(`SELECT id, serial_no, full_name, owner_id, stage, score, requirements FROM leads
      WHERE tenant_id = $1 AND deleted_at IS NULL AND stage NOT IN ('lost','booked') ${scope}`, scope ? [actor.tenantId, actor.id] : [actor.tenantId]);
   return rows.map((l) => ({ lead: { id: l.id, serialNo: l.serial_no, name: l.full_name, ownerId: l.owner_id, stage: l.stage, score: l.score },

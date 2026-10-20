@@ -1,20 +1,21 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { api, ApiError, getToken, setToken } from './lib/api';
-import { connectRealtime, onEvent } from './lib/realtime';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { api, ApiError, setToken,signOut } from './lib/api';
+import { connectRealtime,disconnectRealtime,onEvent } from './lib/realtime';
 import { Dashboard } from './pages/Dashboard';
 import { Leads } from './pages/Leads';
 import { Tasks } from './pages/Tasks';
 import { Inventory } from './pages/Inventory';
 import { Inbox } from './pages/Inbox';
+import { Operations } from './pages/Operations';
 import { Team } from './pages/Team';
 import { Brand, Icon } from './components/Icon';
 import type { LeadRequest } from './pages/Leads';
 
-export interface Me { id: string; email: string; full_name: string; role: string; tenant_name: string; slug: string; is_clocked_in: boolean }
-export interface User { id: string; full_name: string; role: string; is_active: boolean; is_clocked_in: boolean; open_leads: number; capacity_max_open_leads: number | null; email: string }
+export interface Me { id: string; email: string; full_name: string; role: string; tenant_name: string; slug: string; is_clocked_in:boolean;timezone:string }
+export interface User { id: string; full_name: string; role: string; is_active: boolean; is_clocked_in: boolean; open_leads: number; capacity_max_open_leads: number | null; email:string;broker_registration_number?:string|null }
 
-type View = 'dashboard' | 'leads' | 'inbox' | 'tasks' | 'inventory' | 'team';
-const NAV: [View, string][] = [['dashboard', 'Dashboard'], ['leads', 'Leads'], ['inbox', 'Inbox'], ['tasks', 'Follow-ups'], ['inventory', 'Properties'], ['team', 'Team & rules']];
+type View = 'operations'|'dashboard' | 'leads' | 'inbox' | 'tasks' | 'inventory' | 'team';
+const NAV: [View, string][] = [['dashboard','Dashboard'],['operations','Operations'], ['leads', 'Leads'], ['inbox', 'Inbox'], ['tasks', 'Follow-ups'], ['inventory', 'Properties'], ['team', 'Team & rules']];
 
 let toastFn: (m: string) => void = () => {};
 export const toast = (m: string) => toastFn(m);
@@ -22,7 +23,8 @@ export const errMsg = (e: unknown) => (e instanceof ApiError ? e.message : 'Some
 
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
-  const [loading, setLoading] = useState(!!getToken());
+  const [loading, setLoading] = useState(true);
+  const [startupError,setStartupError]=useState('');
   const [view, setView] = useState<View>(() => {
     const v = location.hash.split('/')[1] || localStorage.getItem('lv_view');
     return NAV.some(([key]) => key === v) ? v as View : 'dashboard';
@@ -32,11 +34,14 @@ export function App() {
   const [users, setUsers] = useState<User[]>([]);
   const [msg, setMsg] = useState('');
   const [openLeadId, setOpenLeadId] = useState<string | null>(() => location.hash.split('/')[1] === 'leads' ? location.hash.split('/')[2] || null : null);
-  toastFn = (m) => { setMsg(m); window.setTimeout(() => setMsg(''), 2800); };
+  const toastTimer = useRef<number | undefined>(undefined);
+  toastFn = (m) => { clearTimeout(toastTimer.current); setMsg(m); toastTimer.current=window.setTimeout(() => setMsg(''), 4000); };
+  useEffect(()=>()=>clearTimeout(toastTimer.current),[]);
 
+  const loadSession=()=>{setLoading(true);setStartupError('');api<Me>('GET','/me').then(setMe).catch(e=>{if(e instanceof ApiError&&e.status===401)setMe(null);else setStartupError('We couldn’t reach your workspace. Please try again.');}).finally(()=>setLoading(false));};
   useEffect(() => {
-    if (!getToken()) return;
-    api<Me>('GET', '/me').then(setMe).catch(() => setToken(null)).finally(() => setLoading(false));
+    loadSession();
+    const ended=()=>{setMe(null);setToken(null);disconnectRealtime();};window.addEventListener('lv:session-ended',ended);return ()=>window.removeEventListener('lv:session-ended',ended);
   }, []);
   useEffect(() => {
     if (!me) return;
@@ -65,6 +70,7 @@ export function App() {
   }, []);
 
   if (loading) return <div className="empty"><h3>Loading LeadVolt…</h3></div>;
+  if(startupError)return <div className="empty"><h3>Workspace temporarily unavailable</h3><p role="alert">{startupError}</p><button className="btn" onClick={loadSession}>Try again</button></div>;
   if (!me) return <Auth onDone={() => location.reload()} />;
 
   const go = (v: View) => { setView(v); location.hash = `/${v}`; };
@@ -73,6 +79,7 @@ export function App() {
     setLeadRequest({ filters, create, key: Date.now() }); setOpenLeadId(null); go('leads');
   };
   const pages: Record<View, ReactNode> = {
+    operations:<Operations me={me} users={users} openLead={openLead} browseLeads={browseLeads}/>,
     dashboard: <Dashboard me={me} users={users} openLead={openLead} browseLeads={browseLeads} />,
     leads: <Leads me={me} users={users} initialLeadId={openLeadId} request={leadRequest} onRequestHandled={() => setLeadRequest(null)} onSelect={(id) => { history.replaceState(null, '', `#/leads${id ? '/' + id : ''}`); }} />,
     inbox: <Inbox me={me} openLead={openLead} />,
@@ -90,17 +97,17 @@ export function App() {
         <Brand />
         <div className="workspace-label"><span className="workspace-avatar">{me.tenant_name[0]}</span><div><b>{me.tenant_name}</b><small>Real estate workspace</small></div></div>
         <div className="nav-section">WORKSPACE</div>
-        {NAV.map(([k, l], i) => <div key={k}>{i === 4 && <div className="nav-section">MANAGEMENT</div>}<button className="nav" aria-current={view === k ? 'page' : undefined} onClick={() => go(k)} title={l}><Icon name={k}/><span>{l}</span>{view === k && <span className="nav-marker"/>}</button></div>)}
+        {NAV.map(([k, l], i) => <div key={k}>{k==='inventory'&& <div className="nav-section">MANAGEMENT</div>}<button className="nav" aria-current={view === k ? 'page' : undefined} onClick={() => go(k)} title={l}><Icon name={k==='operations'?'shield':k}/><span>{k==='operations'&&!['owner','admin','manager'].includes(me.role)?'My day':l}</span>{view === k && <span className="nav-marker"/>}</button></div>)}
         <div className="spacer" />
         <div className="shift-card"><span className={`status-dot ${me.is_clocked_in ? '' : 'local'}`}><i/>{me.is_clocked_in ? "You're on shift" : "You're off shift"}</span><p>{me.is_clocked_in ? 'Ready for your next opportunity.' : 'Clock in to start your day.'}</p><button className="btn" onClick={clock}><Icon name="clock" size={15}/>{me.is_clocked_in ? 'Clock out' : 'Clock in'}</button></div>
-        <div className="user-profile"><span className="avatar">{me.full_name.split(' ').map(n => n[0]).slice(0,2).join('')}</span><div><b>{me.full_name}</b><small>{me.role}</small></div><button className="icon-btn" title="Sign out" aria-label="Sign out" onClick={() => { setToken(null); location.reload(); }}><Icon name="logout" size={17}/></button></div>
+        <div className="user-profile"><span className="avatar">{me.full_name.split(' ').map(n => n[0]).slice(0,2).join('')}</span><div><b>{me.full_name}</b><small>{me.role}</small></div><button className="icon-btn" title="Sign out" aria-label="Sign out" onClick={()=>signOut().catch(e=>toast(errMsg(e)))}><Icon name="logout" size={17}/></button></div>
       </nav>
       <section className="main">
         <header className="top"><div className="breadcrumb">Workspace <Icon name="chevron" size={13}/><strong>{NAV.find((n) => n[0] === view)?.[1]}</strong></div><div className="grow"/>
           <form className="global-search" onSubmit={e => { e.preventDefault(); browseLeads({ q: search, queue: 'all' }); setSearch(''); }}><Icon name="search" size={17}/><input id="global-search" aria-label="Search all leads" placeholder="Search leads…" value={search} onChange={e => setSearch(e.target.value)}/><kbd>⌘ K</kbd></form>
           <button className="btn primary" aria-label="New lead" onClick={() => browseLeads({}, true)}><Icon name="plus" size={16}/><span>New lead</span></button>
           <button className="icon-btn" title="Open inbox" aria-label="Open inbox" onClick={() => go('inbox')}><Icon name="inbox"/></button>
-          <details className="profile-menu"><summary aria-label="Your profile"><span className="avatar">{me.full_name.split(' ').map(n => n[0]).slice(0,2).join('')}</span></summary><div><b>{me.full_name}</b><small>{me.email}</small><button onClick={clock}><Icon name="clock" size={15}/>{me.is_clocked_in ? 'Clock out' : 'Clock in'}</button><button onClick={() => { setToken(null); location.reload(); }}><Icon name="logout" size={15}/>Sign out</button></div></details>
+          <details className="profile-menu"><summary aria-label="Your profile"><span className="avatar">{me.full_name.split(' ').map(n => n[0]).slice(0,2).join('')}</span></summary><div><b>{me.full_name}</b><small>{me.email}</small><button onClick={clock}><Icon name="clock" size={15}/>{me.is_clocked_in ? 'Clock out' : 'Clock in'}</button><button onClick={()=>signOut().catch(e=>toast(errMsg(e)))}><Icon name="logout" size={15}/>Sign out</button></div></details>
         </header>
         <div className="content">{pages[view]}</div>
       </section>
@@ -132,7 +139,7 @@ function Auth({ onDone }: { onDone: () => void }) {
         <div className="field"><label htmlFor="name">Your name</label><input id="name" className="in" required value={f.name} onChange={set('name')} /></div></>}
       <div className="field"><label htmlFor="ws">Workspace</label><input id="ws" className="in" required placeholder="e.g. demo" value={f.workspace} onChange={set('workspace')} /></div>
       <div className="field"><label htmlFor="email">Email</label><input id="email" className="in" type="email" required value={f.email} onChange={set('email')} /></div>
-      <div className="field"><label htmlFor="pw">Password</label><input id="pw" className="in" type="password" required minLength={mode === 'register' ? 10 : 1} value={f.password} onChange={set('password')} /></div>
+      <div className="field"><label htmlFor="pw">Password</label><input id="pw" className="in" type="password" required minLength={mode === 'register' ? 12 : 1} value={f.password} onChange={set('password')} /></div>
       {err && <div className="err">{err}</div>}
       <button className="btn primary" type="submit" disabled={busy}>{busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create workspace'}</button>
       <button type="button" className="btn ghost" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>{mode === 'login' ? 'New here? Create a workspace' : 'Have an account? Sign in'}</button>

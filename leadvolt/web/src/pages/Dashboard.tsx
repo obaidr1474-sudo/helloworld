@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, qs } from '../lib/api';
 import { onEvent } from '../lib/realtime';
-import { money, rel, SOURCES } from '../lib/format';
+import { money,rel,SOURCES,dateInZone,dateStartInZone } from '../lib/format';
 import { errMsg, type Me, type User } from '../App';
 import { Icon } from '../components/Icon';
 import type { LeadRequest } from './Leads';
@@ -22,18 +22,18 @@ export function Dashboard({ me, users, openLead, browseLeads }: { me: Me; users:
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
   const manager = ['owner', 'admin', 'manager', 'viewer'].includes(me.role);
-  const from = useMemo(() => period === 'all' ? undefined : period === 'today' ? new Date(new Date().setHours(0, 0, 0, 0)).toISOString() : new Date(Date.now() - (period === '7d' ? 7 : 30) * 864e5).toISOString(), [period, retry]);
+  const from = useMemo(() => period === 'all' ? undefined : period === 'today' ? dateStartInZone(dateInZone(new Date().toISOString(),me.timezone),me.timezone) : new Date(Date.now() - (period === '7d' ? 7 : 30) * 864e5).toISOString(), [period,retry,me.timezone]);
   useEffect(() => {
     const controller = new AbortController();
     const load = () => api<Overview>('GET', '/analytics/overview' + qs({ from, agentIds: agent })).then(r => { if (!controller.signal.aborted) { setD(r); setError(''); } }).catch(e => { if (!controller.signal.aborted) setError(errMsg(e)); });
     setD(null); load();
     let t: number | undefined;
-    const off = onEvent((e) => { if (e.type.startsWith('lead.') || e.type === 'deal.booked' || e.type === 'sla.breached') { clearTimeout(t); t = window.setTimeout(load, 500); } });
+    const off = onEvent((e) => { if(e.type==='sync.required'||e.type.startsWith('lead.') || e.type === 'deal.booked' || e.type === 'sla.breached') { clearTimeout(t); t = window.setTimeout(load, 500); } });
     return () => { controller.abort(); off(); clearTimeout(t); };
   // The period defines a single time boundary for each request, including live refreshes.
   }, [period, agent, retry]);
   const browse = (filters: LeadRequest['filters'] = {}) => browseLeads({ queue: 'all', ownerId: agent, createdFrom: from, ...filters });
-  const date = new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Asia/Dubai' }).format(new Date());
+  const date = new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone:me.timezone||'Asia/Dubai' }).format(new Date());
   if (error) return <div className="empty"><h3>We couldn’t load your dashboard</h3><p role="alert">{error}</p><button className="btn" onClick={() => setRetry(n => n + 1)}>Try again</button></div>;
   const t = d?.totals;
   const kpis = t ? [

@@ -1,0 +1,65 @@
+# Run behind your HTTPS reverse proxy. A managed PostgreSQL service supplies the three roles.
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+    environment:
+      NODE_ENV: development
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set the migration owner database URL}
+    command: ["node", "dist/migrate.js"]
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?Set the non-owner runtime database URL}
+      WORKER_DATABASE_URL: ${WORKER_DATABASE_URL:?Set the dedicated worker database URL}
+      JWT_SECRET: ${JWT_SECRET:?Set a unique strong JWT secret}
+      CORS_ORIGIN: ${CORS_ORIGIN:?Set the exact HTTPS CRM origin}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set the public HTTPS CRM URL}
+      ALLOW_PUBLIC_REGISTRATION: "false"
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      WA_WORKSPACE: ${WA_WORKSPACE:-}
+      WA_ACCESS_TOKEN: ${WA_ACCESS_TOKEN:-}
+      WA_PHONE_NUMBER_ID: ${WA_PHONE_NUMBER_ID:-}
+      WA_APP_SECRET: ${WA_APP_SECRET:-}
+      WA_VERIFY_TOKEN: ${WA_VERIFY_TOKEN:-}
+      WA_API_VERSION: ${WA_API_VERSION:-}
+    command: ["node", "dist/index.js"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    expose: ["4000"]
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+    ports: ["127.0.0.1:${WEB_PORT:-8080}:8080"]
+    depends_on:
+      server: {condition: service_healthy}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]

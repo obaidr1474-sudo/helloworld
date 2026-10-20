@@ -10,7 +10,7 @@ export function Tasks({ me, users, openLead }: { me: Me; users: User[]; openLead
   const [rows, setRows] = useState<any[]>([]);
   const isMgr = ['owner', 'admin', 'manager'].includes(me.role);
   const load = () => api<any[]>('GET', '/tasks' + qs({ queue, assigneeId: assignee || undefined })).then(setRows).catch((e) => toast(errMsg(e)));
-  useEffect(() => { load(); return onEvent((e) => { if (e.type.startsWith('task.')) load(); }); }, [queue, assignee]); // eslint-disable-line
+  useEffect(() => { load(); return onEvent((e) => { if(e.type==='sync.required'||e.type.startsWith('task.')) load(); }); }, [queue, assignee]); // eslint-disable-line
   const toggle = async (t: any) => { try { await api('POST', `/tasks/${t.id}/${t.status === 'done' ? 'reopen' : 'complete'}`, {}); load(); } catch (e) { toast(errMsg(e)); } };
   return <div className="pad">
     <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>

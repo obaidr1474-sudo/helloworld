@@ -1,3 +1,5 @@
+> Historical first review. The current workflow, security changes and validation are documented in [BUSINESS_UPGRADE.md](BUSINESS_UPGRADE.md). Its results supersede the first-cut status below.
+
 # LeadVolt review and first corrective implementation
 
 Reviewed 20 October 2026. Input: the supplied `leadvolt-codebase.zip`.

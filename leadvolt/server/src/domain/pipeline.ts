@@ -22,7 +22,7 @@ export const DISPOSITIONS: Disposition[] = [
   { key: 'callback', label: 'Callback', stage: 'contacted', subStatuses: ['Follow-up', 'Not reachable', 'Busy', 'WhatsApp sent'], requiresNextAction: true, taskType: 'call' },
   { key: 'meeting', label: 'Meeting', stage: 'meeting', subStatuses: ['Office', 'Online', 'Meeting done', 'Meeting not done'], requiresNextAction: true, taskType: 'meeting' },
   { key: 'site_visit', label: 'Site visit', stage: 'site_visit', subStatuses: ['Scheduled', 'Rescheduled', 'Visit done', 'Visit not done'], requiresNextAction: true, taskType: 'site_visit' },
-  { key: 'eoi', label: 'EOI', stage: 'eoi', subStatuses: ['EOI received', 'Token paid'], allowsNextAction: true, taskType: 'follow_up' },
+  { key: 'eoi', label: 'EOI', stage: 'eoi', subStatuses: ['EOI received', 'Token paid'], requiresNextAction:true,taskType:'follow_up' },
   { key: 'booked', label: 'Booked', stage: 'booked', subStatuses: ['Pending approval', 'Approved', 'Invoiced'], requiresDealValue: true },
   { key: 'not_interested', label: 'Not interested', stage: 'lost', subStatuses: ['Budget mismatch', 'Location mismatch', 'Bought elsewhere', 'Just browsing', 'Timeline too far'], isLost: true },
   { key: 'drop', label: 'Drop', stage: 'lost', subStatuses: ['Invalid number', 'Duplicate', 'Agent / broker', 'Spam'], isLost: true },
@@ -58,6 +58,7 @@ export function validateDisposition(current: Stage, input: DispositionInput, now
   if (!d) return `Unknown status "${input.disposition}".`;
   if (!canTransition(current, d.stage)) return `A ${current.replace('_', ' ')} lead cannot move to ${d.label}.`;
   if (input.subStatus && !d.subStatuses.includes(input.subStatus)) return `"${input.subStatus}" is not a valid option for ${d.label}.`;
+  if(input.nextActionAt && Number.isNaN(new Date(input.nextActionAt).getTime())) return 'The next action date is not valid.';
   if (d.requiresNextAction) {
     if (!input.nextActionAt) return 'Set the next action date and time. Every active lead needs one.';
     const t = new Date(input.nextActionAt);

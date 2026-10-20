@@ -20,6 +20,7 @@ d('LeadVolt API', () => {
   const inHour = (h = 1) => new Date(Date.now() + h * 3600_000).toISOString();
 
   beforeAll(async () => {
+    const workerUrl=new URL(process.env.TEST_MIGRATION_URL!);workerUrl.username='leadvolt_worker';workerUrl.password='leadvolt_worker';process.env.WORKER_DATABASE_URL=process.env.TEST_WORKER_DATABASE_URL??workerUrl.toString();
     process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
     process.env.MIGRATION_DATABASE_URL = process.env.TEST_MIGRATION_URL;
     process.env.CORS_ORIGIN = 'http://localhost';
@@ -121,10 +122,10 @@ d('LeadVolt API', () => {
   });
 
   it('accepts HMAC-signed portal intake and rejects bad signatures', async () => {
-    const settings = await call('GET', '/settings', tok.owner);
+    const settings = await call('POST','/settings/intake-secret/reveal',tok.owner,{});
     const body = JSON.stringify({ contact: { name: 'Portal Person', phone: '0503333333' }, listing: { reference: 'BY-99' }, channel: 'whatsapp' });
     const ok = await app.inject({ method: 'POST', url: '/api/v1/intake/portal?source=bayut', payload: body,
-      headers: { 'content-type': 'application/json', 'x-leadvolt-workspace': 'test-realty', 'x-leadvolt-signature': signIntake(settings.body.intake_secret, body) } });
+      headers: { 'content-type': 'application/json', 'x-leadvolt-workspace': 'test-realty', 'x-leadvolt-signature': signIntake(settings.body.secret, body) } });
     expect(ok.statusCode).toBe(201);
     const lead = await call('GET', `/leads/${JSON.parse(ok.body).leadId}`, tok.owner);
     expect(lead.body.propertyId).toBe(ids.prop);
@@ -138,6 +139,8 @@ d('LeadVolt API', () => {
     await c.connect();
     expect((await c.query('SELECT count(*)::int AS n FROM leads')).rows[0].n).toBe(0);
     await c.query(`SELECT set_config('app.tenant_id', gen_random_uuid()::text, false)`);
+    expect((await c.query('SELECT count(*)::int AS n FROM leads')).rows[0].n).toBe(0);
+    await c.query("SELECT set_config('app.system','on',false)");
     expect((await c.query('SELECT count(*)::int AS n FROM leads')).rows[0].n).toBe(0);
     await c.end();
   });

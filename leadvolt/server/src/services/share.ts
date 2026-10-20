@@ -12,7 +12,7 @@ export async function createShareLink(tx: Tx, actor: Actor, leadId: string, prop
   const props = (await tx.query(`SELECT id, project_name, community, beds, property_type, price, area_sqft, handover, offering_type, brochure_url
       FROM properties WHERE tenant_id = $1 AND id = ANY($2) AND deleted_at IS NULL`, [actor.tenantId, propertyIds])).rows;
   if (props.length !== propertyIds.length) throw badRequest('One or more properties were not found.');
-  const code = crypto.randomBytes(6).toString('base64url');
+  const code = crypto.randomBytes(18).toString('base64url');
   await tx.query(`INSERT INTO share_links (tenant_id, code, lead_id, created_by, property_ids, channel, expires_at) VALUES ($1,$2,$3,$4,$5,$6, now() + interval '60 days')`,
     [actor.tenantId, code, leadId, actor.id, propertyIds, channel]);
   const url = `${config.publicBaseUrl}/s/${code}`;
@@ -30,7 +30,7 @@ export async function openShareLink(tx: Tx, code: string) {
       WHERE code = $1 AND (expires_at IS NULL OR expires_at > now()) RETURNING *`, [code])).rows[0];
   if (!link) return null;
   const props = (await tx.query(`SELECT project_name, community, property_type, beds, baths, area_sqft, price, currency, handover, offering_type, brochure_url, notes
-      FROM properties WHERE tenant_id = $1 AND id = ANY($2)`, [link.tenant_id, link.property_ids])).rows;
+      FROM properties WHERE tenant_id = $1 AND id = ANY($2) AND deleted_at IS NULL`, [link.tenant_id, link.property_ids])).rows;
   const lead = (await tx.query(`SELECT id, owner_id, full_name FROM leads WHERE id = $1`, [link.lead_id])).rows[0];
   const tenant = (await tx.query(`SELECT name FROM tenants WHERE id = $1`, [link.tenant_id])).rows[0];
   {

@@ -14,7 +14,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 from playwright.sync_api import sync_playwright, expect
 
-BASE = os.environ.get('LEADVOLT_URL', 'http://127.0.0.1:5173')
+BASE = os.environ.get('LEADVOLT_URL', 'http://localhost:5173')
 OUT = Path(os.environ.get('LEADVOLT_REVIEW_DIR', '/tmp/leadvolt-browser-review'))
 OUT.mkdir(parents=True, exist_ok=True)
 checks = []
@@ -45,7 +45,7 @@ with sync_playwright() as p:
         lead = api('POST','/leads', {'name':f'Review Lead {n:02}', 'phone':f'+9715099{n:05}', 'source':'bayut' if n % 2 else 'facebook', 'ownerId':None, 'requirements':{'budgetMax':1500000}})['lead']
         leads.append(lead)
     page.goto(BASE)
-    page.evaluate('(token) => { localStorage.clear(); localStorage.setItem("lv_token", token); }', token)
+    page.evaluate('localStorage.clear()')
     page.reload()
     expect(page.get_by_text('Where leads come from',exact=True)).to_be_visible()
     page.get_by_role('button',name=re.compile('Total leads')).click()
@@ -199,6 +199,13 @@ with sync_playwright() as p:
     page.get_by_role('button',name='Try again',exact=True).click()
     expect(page.get_by_text('Where leads come from',exact=True)).to_be_visible()
     passed('dashboard errors are visible and recover through retry')
+    page.route('**/api/v1/me',lambda route:route.fulfill(status=503,content_type='application/json',body='{"message":"Temporary test outage"}'))
+    page.reload()
+    expect(page.get_by_role('heading',name='Workspace temporarily unavailable',exact=True)).to_be_visible()
+    page.unroute('**/api/v1/me')
+    page.get_by_role('button',name='Try again',exact=True).click()
+    expect(page.get_by_text('Where leads come from',exact=True)).to_be_visible()
+    passed('a startup service outage displays retry and restores the existing session')
     assert not errors, errors
     passed('no uncaught browser JavaScript errors')
     (OUT/'results.json').write_text(json.dumps({'checks':checks,'passed':len(checks),'page_errors':errors},indent=2))

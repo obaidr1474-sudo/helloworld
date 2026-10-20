@@ -1,0 +1,12 @@
+{
+  "containersBuilt": true,
+  "productionStartup": true,
+  "publicRegistrationDisabled": true,
+  "secureHttpOnlyCookie": true,
+  "frontendSecurityHeaders": true,
+  "loginAndAuthenticatedAPI": true,
+  "unmappedListingHeld": true,
+  "signedPayloadEventIdRequired": true,
+  "signedProviderRetryDeduplicated": true,
+  "environment": "isolated local containers, HTTPS origin configuration; no public deployment"
+}
