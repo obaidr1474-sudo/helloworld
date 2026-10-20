@@ -1,0 +1,80 @@
+import crypto from 'node:crypto';
+import type { LeadInput } from './leads.js';
+import type { Requirements } from '../domain/scoring.js';
+
+/**
+ * Intake adapters turn an inbound payload into a LeadInput. Portal payload formats depend on your contract
+ * with each portal; `portal` uses a configurable field map (tenant settings.intake_field_maps[adapter]) with
+ * common defaults, so map your contracted payload once rather than changing code.
+ */
+export type AdapterName = 'generic' | 'portal' | 'ivr' | 'web_form';
+
+const DEFAULT_PORTAL_MAP = {
+  name: ['name', 'full_name', 'contact.name', 'lead.name'],
+  phone: ['phone', 'mobile', 'contact.phone', 'lead.phone', 'phone_number'],
+  email: ['email', 'contact.email', 'lead.email'],
+  listingRef: ['listing_ref', 'property_reference', 'reference', 'listing.reference', 'property.reference'],
+  message: ['message', 'comment', 'enquiry', 'lead.message'],
+  channel: ['channel', 'type', 'enquiry_type'],
+};
+export type FieldMap = Partial<Record<keyof typeof DEFAULT_PORTAL_MAP, string[]>>;
+
+function pick(obj: any, paths: string[]): any {
+  for (const p of paths) {
+    const v = p.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+    if (v !== undefined && v !== null && v !== '') return v;
+  }
+  return undefined;
+}
+
+export function normalizeIntake(adapter: AdapterName, sourceParam: string | undefined, body: any, fieldMap?: FieldMap): LeadInput {
+  switch (adapter) {
+    case 'generic':
+      return {
+        name: String(body.name ?? '').trim(), phone: body.phone ?? null, email: body.email ?? null,
+        source: body.source ?? sourceParam ?? 'other', subSource: body.subSource ?? null, listingRef: body.listingRef ?? null,
+        campaign: body.campaign ?? {}, requirements: body.requirements ?? {}, note: body.note ?? null, rawPayload: body,
+      };
+    case 'portal': {
+      const map = { ...DEFAULT_PORTAL_MAP, ...(fieldMap ?? {}) };
+      const name = pick(body, map.name); const phone = pick(body, map.phone);
+      const channel = pick(body, map.channel);
+      return {
+        name: String(name ?? phone ?? 'Portal lead'), phone: phone ?? null, email: pick(body, map.email) ?? null,
+        source: sourceParam ?? 'other', subSource: channel ? `${sourceParam} ${channel}` : sourceParam ?? null,
+        listingRef: pick(body, map.listingRef) ?? null, note: pick(body, map.message) ?? null, rawPayload: body,
+      };
+    }
+    case 'ivr': {
+      // Typical cloud-telephony callback: caller number, dialled number (DID) mapped to a source, call status.
+      const caller = body.caller ?? body.from ?? body.caller_number;
+      const did = body.did ?? body.to ?? body.called_number;
+      return {
+        name: body.caller_name || `Caller ${caller}`, phone: caller, source: body.source ?? sourceParam ?? 'ivr',
+        subSource: did ? `Line ${did}` : 'IVR', note: body.status ? `Call ${body.status}${body.duration ? ' · ' + body.duration + 's' : ''}` : null, rawPayload: body,
+      };
+    }
+    case 'web_form': {
+      const req: Requirements = {
+        purpose: body.purpose, offering: body.offering ?? 'any', types: body.property_type ? [body.property_type] : [],
+        beds: body.beds !== undefined && body.beds !== '' ? Number(body.beds) : null,
+        budgetMin: body.budget_min ? Number(body.budget_min) : null, budgetMax: body.budget_max ? Number(body.budget_max) : null,
+        communities: body.community ? [body.community] : [],
+      };
+      return {
+        name: String(body.name ?? '').trim(), phone: body.phone, email: body.email, source: 'website', subSource: body.form ?? 'Website form',
+        campaign: { utm_source: body.utm_source, utm_medium: body.utm_medium, utm_campaign: body.utm_campaign, utm_term: body.utm_term, utm_content: body.utm_content },
+        requirements: req, note: body.message ?? null, rawPayload: body,
+      };
+    }
+  }
+}
+
+export function signIntake(secret: string, raw: string | Buffer) {
+  return 'sha256=' + crypto.createHmac('sha256', secret).update(raw).digest('hex');
+}
+export function verifyIntake(secret: string, raw: string | Buffer, header?: string) {
+  if (!header) return false;
+  const exp = signIntake(secret, raw);
+  return exp.length === header.length && crypto.timingSafeEqual(Buffer.from(exp), Buffer.from(header));
+}

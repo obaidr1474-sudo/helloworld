@@ -1,0 +1,22 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_DB: leadvolt_test, POSTGRES_USER: leadvolt, POSTGRES_PASSWORD: leadvolt }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U leadvolt" --health-interval 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: PGPASSWORD=leadvolt psql -h localhost -U leadvolt -d leadvolt_test -c "CREATE ROLE leadvolt_app LOGIN PASSWORD 'leadvolt_app'"
+      - run: npm run typecheck -w server && npm run build -w web
+      - run: npm test
+        env:
+          TEST_DATABASE_URL: postgres://leadvolt_app:leadvolt_app@localhost:5432/leadvolt_test
+          TEST_MIGRATION_URL: postgres://leadvolt:leadvolt@localhost:5432/leadvolt_test
