@@ -1,0 +1,7 @@
+{
+  "passed": 91,
+  "testFiles": 9,
+  "databaseSuitesEnabled": true,
+  "productionBuild": "passed",
+  "latestBookingAPI": "covered by real-database transition/immutability test; dedicated UI pending"
+}
