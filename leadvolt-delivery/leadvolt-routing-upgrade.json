@@ -1,0 +1,13 @@
+{
+  "archive": "leadvolt-routing-upgrade.zip",
+  "sha256": "a0fb4ac58bb6395179ebd16e94e0ee7de62fd81111583f9377c494aff76c8083",
+  "bytes": 2113296,
+  "sourceCommit": "d12c87d258568375471b972e374a47ea9fccdcad",
+  "files": 113,
+  "validation": {
+    "automatedChecks": 71,
+    "browserScenarios": 26,
+    "restoredTables": 22,
+    "dependencyAdvisories": 0
+  }
+}
