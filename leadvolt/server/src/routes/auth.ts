@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { config } from '../lib/config.js';
 import { assignInternal, loadLead } from '../services/leads.js';
 import bcrypt from 'bcryptjs';
+import {issueSession,createChallenge,revokeUserSessions} from '../services/security.js';
 import { z } from 'zod';
 import { q, withTenant } from '../lib/db.js';
 import { badRequest, forbidden, notFound, HttpError } from '../lib/errors.js';
@@ -12,11 +13,6 @@ import { emit, audit } from '../lib/events.js';
 const DUMMY_HASH=bcrypt.hashSync('unknown-account-timing-padding',12);
 
 export async function authRoutes(app: FastifyInstance) {
-  const sign = (u: { id: string; tenant_id: string; role: string; full_name: string; auth_version:number },reply:any) => {
-    const token=app.jwt.sign({sub:u.id,tid:u.tenant_id,role:u.role,name:u.full_name,ver:u.auth_version},{expiresIn:`${config.sessionHours}h`});
-    reply.setCookie('lv_session',token,{httpOnly:true,secure:config.production,sameSite:'lax',path:'/',maxAge:config.sessionHours*3600});
-    return token;
-  };
   const passwordSchema=z.string().min(12).refine(v=>Buffer.byteLength(v,'utf8')<=72,'Password must be at most 72 UTF-8 bytes.');
   app.post('/auth/register',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{
     validateOrigin(req);
@@ -28,7 +24,7 @@ export async function authRoutes(app: FastifyInstance) {
       const u=(await tx.query(`INSERT INTO users(tenant_id,email,password_hash,full_name,role) VALUES($1,$2,$3,$4,'owner') RETURNING id,tenant_id,role,full_name,auth_version`,[tenantId,b.email.toLowerCase(),hash,b.name])).rows[0];
       await audit(tx,tenantId,u.id,'tenant',tenantId,'register');return u;
     });
-    return {token:sign(user,reply),tenant:{id:tenantId,slug:b.slug}};
+    return {token:await issueSession(app,user,reply,req),tenant:{id:tenantId,slug:b.slug}};
   });
 
   app.post('/auth/login',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{
@@ -38,17 +34,17 @@ export async function authRoutes(app: FastifyInstance) {
     const fail = new HttpError(401, 'invalid_credentials', 'The workspace, email or password is not correct.');
     if(!t){await bcrypt.compare(b.password,DUMMY_HASH);throw fail;}
     const u = await withTenant(t.id, async (tx) => (await tx.query(
-      `SELECT id, tenant_id, role, full_name, password_hash, is_active,auth_version FROM users WHERE tenant_id = $1 AND email = $2`, [t.id, b.email])).rows[0]);
+      `SELECT id, tenant_id, role, full_name, password_hash, is_active,auth_version,mfa_enabled FROM users WHERE tenant_id = $1 AND email = $2`, [t.id, b.email])).rows[0]);
     const valid=await bcrypt.compare(b.password,u?.password_hash??DUMMY_HASH);
     if(!u||!u.is_active||!valid) throw fail;
-    return { token: sign(u,reply) };
+    if(u.mfa_enabled)return {mfaRequired:true,challenge:await createChallenge(u)};
+    return { token:await issueSession(app,u,reply,req) };
   });
 
   app.post('/auth/logout',{preHandler:authenticate},async(req,reply)=>{
     const a=actorOf(req);
     await withTenant(a.tenantId,async tx=>{
-      await tx.query('UPDATE users SET auth_version=auth_version+1 WHERE tenant_id=$1 AND id=$2',[a.tenantId,a.id]);
-      await emit(tx,a.tenantId,'auth.revoked',{user_ids:[a.id!]});
+      await revokeUserSessions(tx,a.tenantId,a.id!);
       await audit(tx,a.tenantId,a.id,'user',a.id,'logout');
     });
     reply.clearCookie('lv_session',{path:'/',httpOnly:true,secure:config.production,sameSite:'lax'});
@@ -58,7 +54,7 @@ export async function authRoutes(app: FastifyInstance) {
   app.get('/me' , { preHandler: authenticate }, async (req) => {
     const a = actorOf(req);
     return withTenant(a.tenantId, async (tx) => {
-      const { rows: [u] } = await tx.query(`SELECT u.id, u.email, u.full_name, u.role, u.team_id, u.is_clocked_in, u.preferences, t.name AS tenant_name, t.slug,
+      const { rows: [u] } = await tx.query(`SELECT u.id, u.email, u.full_name, u.role, u.team_id, u.is_clocked_in, u.preferences,u.mfa_enabled,(t.settings->'mfa_required_roles' @> to_jsonb(u.role::text)) AS mfa_required, t.name AS tenant_name, t.slug,
           t.default_currency, t.timezone FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.tenant_id = $1 AND u.id = $2`, [a.tenantId, a.id]);
       return u;
     });
@@ -110,7 +106,7 @@ export async function authRoutes(app: FastifyInstance) {
         const leads=(await tx.query(`SELECT id FROM leads WHERE tenant_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND stage NOT IN ('lost','booked') ORDER BY id FOR UPDATE`,[a.tenantId,id])).rows;
         for(const l of leads){const lead=await loadLead(tx,a.tenantId,l.id);await assignInternal(tx,a,lead,null,'deactivation');await tx.query(`UPDATE leads SET routing_status=CASE WHEN routing_mode='listing' THEN 'agent_unavailable' ELSE 'manual_review' END,routing_note='Previous agent account is no longer eligible; administrator review is required' WHERE tenant_id=$1 AND id=$2`,[a.tenantId,l.id]);}
       }
-      if(revoked) await emit(tx,a.tenantId,'auth.revoked',{user_ids:[id]});
+      if(revoked){await tx.query('UPDATE auth_sessions SET revoked_at=now() WHERE tenant_id=$1 AND user_id=$2 AND revoked_at IS NULL',[a.tenantId,id]);await emit(tx,a.tenantId,'auth.revoked',{user_ids:[id]});}
       const {password,...safe}=b;
       await audit(tx,a.tenantId,a.id,'user',id,'update',{...safe,passwordChanged:!!password});
       return u;

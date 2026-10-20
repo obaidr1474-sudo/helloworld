@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, qs } from '../lib/api';
+import {SavedLeadViews} from '../components/SavedLeadViews';
 import { Icon } from '../components/Icon';
 import { makeCsv } from '../lib/csv';
 import { onEvent, subscribeLead, useRealtimeStatus } from '../lib/realtime';
@@ -151,6 +152,7 @@ export function Leads({ me, users, initialLeadId, request, onSelect, onRequestHa
   const count = counts[queue] ?? counts.all ?? 0;
   return <div className="pad leads-page">
     <div className="page-heading"><div><div className="eyebrow">RELATIONSHIPS START HERE</div><h1>Leads <span className="title-count">{loading ? '…' : counts.all ?? 0}</span></h1><p>Every opportunity, with the next step in view.</p></div><button className="btn primary" onClick={()=>setModal('new')}><Icon name="plus" size={17}/>Add lead</button></div>
+    <SavedLeadViews me={me} filters={params} onApply={f=>{setScope(f.scope??'all');setQueue(f.queue??'active');setQ(f.q??'');setSource(f.source??'');setOwner(f.ownerId??'');setTemp(f.temperature??'');setStage(f.stage??'');setCreatedFrom(f.createdFrom??'');setCreatedTo(f.createdTo??'');setSort(f.sort??'updated');}}/>
     <section className="card leads-card">
       <div className="scope-tabs" role="group" aria-label="Lead scope">{SCOPES.map(([key,label])=><button key={key} aria-pressed={scope===key} onClick={()=>setScope(key)}>{label}</button>)}</div>
       <div className="queue-tabs" role="group" aria-label="Lead queue">{[['all','All statuses'],...QUEUES].map(([key,label])=><button key={key} aria-pressed={queue===key} onClick={()=>setQueue(key)}>{label}<span>{loading?'—':counts[key]??0}</span></button>)}</div>
@@ -406,7 +408,7 @@ function AssignModal({ lead, users, me, onClose, onSaved }: { lead: Lead; users:
 
 function NewLeadModal({ users, onClose, onSaved }: { users: User[]; onClose: () => void; onSaved: (id: string) => void }) {
   const dialogRef = useDialog<HTMLFormElement>(onClose);
-  const [f, setF] = useState({ name: '', phone: '', email: '', source: 'bayut', subSource: '', owner:'auto',listingRef:'',budgetMax: '', beds: '', type: '', community: '', note: '' });
+  const [f, setF] = useState({ name: '', phone: '', email: '', source: 'other', subSource: '', owner:'auto',listingRef:'',budgetMax: '', beds: '', type: '', community: '', note: '' });
   const [err, setErr] = useState('');
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
   const save = async (e: React.FormEvent) => {
@@ -428,7 +430,7 @@ function NewLeadModal({ users, onClose, onSaved }: { users: User[]; onClose: () 
         <div className="field"><label>Email</label><input aria-label="Email" className="in" type="email" value={f.email} onChange={set('email')} /></div>
         <div className="field"><label>Source</label><select aria-label="Source" className="in" value={f.source} onChange={set('source')}>{Object.entries(SOURCES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
         <div className="field"><label>Portal listing reference</label><input className="in" aria-label="Portal listing reference" value={f.listingRef} onChange={set('listingRef')} placeholder="Routes to the mapped responsible agent"/></div><div className="field"><label>Sub-source</label><input aria-label="Sub-source" className="in" value={f.subSource} onChange={set('subSource')} /></div>
-        <div className="field"><label>Assign to</label><select aria-label="Assign to" className="in" value={f.owner} onChange={set('owner')}><option value="auto">Auto-assign by rules</option><option value="">Unassigned</option>{users.filter((u) => u.is_active).map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}</select></div>
+        <div className="field"><label>Assign to</label><select aria-label="Assign to" className="in" disabled={['bayut','property_finder','dubizzle'].includes(f.source)||!!f.listingRef.trim()} value={f.owner} onChange={set('owner')}><option value="auto">{['bayut','property_finder','dubizzle'].includes(f.source)||f.listingRef.trim()?'Use listing ownership; hold unknown references':'Auto-assign by rules'}</option><option value="">Unassigned</option>{users.filter((u) => u.is_active).map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}</select></div>
         <div className="field"><label>Budget up to (AED)</label><input aria-label="Budget up to (AED)" className="in" type="number" value={f.budgetMax} onChange={set('budgetMax')} /></div>
         <div className="field"><label>Bedrooms</label><input aria-label="Bedrooms" className="in" type="number" min={0} value={f.beds} onChange={set('beds')} /></div>
         <div className="field"><label>Type</label><select aria-label="Type" className="in" value={f.type} onChange={set('type')}><option value="">Any</option>{['Apartment', 'Villa', 'Townhouse', 'Penthouse'].map((t) => <option key={t}>{t}</option>)}</select></div>

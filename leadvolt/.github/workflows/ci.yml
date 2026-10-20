@@ -42,3 +42,4 @@ jobs:
           done
           python scripts/browser_smoke.py
           python scripts/browser_routing.py
+          python scripts/browser_company.py

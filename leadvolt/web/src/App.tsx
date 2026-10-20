@@ -7,15 +7,17 @@ import { Tasks } from './pages/Tasks';
 import { Inventory } from './pages/Inventory';
 import { Inbox } from './pages/Inbox';
 import { Operations } from './pages/Operations';
+import {Reports} from './pages/Reports';
+import {Security} from './pages/Security';
 import { Team } from './pages/Team';
 import { Brand, Icon } from './components/Icon';
 import type { LeadRequest } from './pages/Leads';
 
-export interface Me { id: string; email: string; full_name: string; role: string; tenant_name: string; slug: string; is_clocked_in:boolean;timezone:string }
+export interface Me { id: string; email: string; full_name: string; role: string; tenant_name: string; slug: string; is_clocked_in:boolean;timezone:string;mfa_enabled?:boolean;mfa_required?:boolean }
 export interface User { id: string; full_name: string; role: string; is_active: boolean; is_clocked_in: boolean; open_leads: number; capacity_max_open_leads: number | null; email:string;broker_registration_number?:string|null }
 
-type View = 'operations'|'dashboard' | 'leads' | 'inbox' | 'tasks' | 'inventory' | 'team';
-const NAV: [View, string][] = [['dashboard','Dashboard'],['operations','Operations'], ['leads', 'Leads'], ['inbox', 'Inbox'], ['tasks', 'Follow-ups'], ['inventory', 'Properties'], ['team', 'Team & rules']];
+type View = 'reports'|'security'|'operations'|'dashboard' | 'leads' | 'inbox' | 'tasks' | 'inventory' | 'team';
+const NAV: [View, string][] = [['dashboard','Dashboard'],['operations','Operations'], ['leads', 'Leads'], ['inbox', 'Inbox'], ['tasks', 'Follow-ups'], ['inventory', 'Properties'], ['reports','Reports'],['team', 'Team & rules'],['security','Account security']];
 
 let toastFn: (m: string) => void = () => {};
 export const toast = (m: string) => toastFn(m);
@@ -41,10 +43,10 @@ export function App() {
   const loadSession=()=>{setLoading(true);setStartupError('');api<Me>('GET','/me').then(setMe).catch(e=>{if(e instanceof ApiError&&e.status===401)setMe(null);else setStartupError('We couldn’t reach your workspace. Please try again.');}).finally(()=>setLoading(false));};
   useEffect(() => {
     loadSession();
-    const ended=()=>{setMe(null);setToken(null);disconnectRealtime();};window.addEventListener('lv:session-ended',ended);return ()=>window.removeEventListener('lv:session-ended',ended);
+    const ended=()=>{setMe(null);setToken(null);disconnectRealtime();};const required=()=>{api<Me>('GET','/me').then(setMe).catch(()=>{});setView('security');};window.addEventListener('lv:session-ended',ended);window.addEventListener('lv:mfa-required',required);return ()=>{window.removeEventListener('lv:session-ended',ended);window.removeEventListener('lv:mfa-required',required);};
   }, []);
   useEffect(() => {
-    if (!me) return;
+    if (!me||(me.mfa_required&&!me.mfa_enabled)) return;
     connectRealtime();
     const load = () => api<User[]>('GET', '/users').then(setUsers).catch(() => {});
     load();
@@ -79,6 +81,8 @@ export function App() {
     setLeadRequest({ filters, create, key: Date.now() }); setOpenLeadId(null); go('leads');
   };
   const pages: Record<View, ReactNode> = {
+    reports:<Reports me={me} users={users} browseLeads={browseLeads}/>,
+    security:<Security me={me} reloadMe={()=>api<Me>('GET','/me').then(setMe).catch(e=>toast(errMsg(e)))}/>,
     operations:<Operations me={me} users={users} openLead={openLead} browseLeads={browseLeads}/>,
     dashboard: <Dashboard me={me} users={users} openLead={openLead} browseLeads={browseLeads} />,
     leads: <Leads me={me} users={users} initialLeadId={openLeadId} request={leadRequest} onRequestHandled={() => setLeadRequest(null)} onSelect={(id) => { history.replaceState(null, '', `#/leads${id ? '/' + id : ''}`); }} />,
@@ -97,7 +101,7 @@ export function App() {
         <Brand />
         <div className="workspace-label"><span className="workspace-avatar">{me.tenant_name[0]}</span><div><b>{me.tenant_name}</b><small>Real estate workspace</small></div></div>
         <div className="nav-section">WORKSPACE</div>
-        {NAV.map(([k, l], i) => <div key={k}>{k==='inventory'&& <div className="nav-section">MANAGEMENT</div>}<button className="nav" aria-current={view === k ? 'page' : undefined} onClick={() => go(k)} title={l}><Icon name={k==='operations'?'shield':k}/><span>{k==='operations'&&!['owner','admin','manager'].includes(me.role)?'My day':l}</span>{view === k && <span className="nav-marker"/>}</button></div>)}
+        {NAV.filter(([k])=>k!=='reports'||['owner','admin','manager'].includes(me.role)).map(([k, l], i) => <div key={k}>{k==='inventory'&& <div className="nav-section">MANAGEMENT</div>}<button className="nav" aria-current={view === k ? 'page' : undefined} onClick={() => go(k)} title={l}><Icon name={['operations','security'].includes(k)?'shield':k==='reports'?'target':k}/><span>{k==='operations'&&!['owner','admin','manager'].includes(me.role)?'My day':l}</span>{view === k && <span className="nav-marker"/>}</button></div>)}
         <div className="spacer" />
         <div className="shift-card"><span className={`status-dot ${me.is_clocked_in ? '' : 'local'}`}><i/>{me.is_clocked_in ? "You're on shift" : "You're off shift"}</span><p>{me.is_clocked_in ? 'Ready for your next opportunity.' : 'Clock in to start your day.'}</p><button className="btn" onClick={clock}><Icon name="clock" size={15}/>{me.is_clocked_in ? 'Clock out' : 'Clock in'}</button></div>
         <div className="user-profile"><span className="avatar">{me.full_name.split(' ').map(n => n[0]).slice(0,2).join('')}</span><div><b>{me.full_name}</b><small>{me.role}</small></div><button className="icon-btn" title="Sign out" aria-label="Sign out" onClick={()=>signOut().catch(e=>toast(errMsg(e)))}><Icon name="logout" size={17}/></button></div>
@@ -109,7 +113,7 @@ export function App() {
           <button className="icon-btn" title="Open inbox" aria-label="Open inbox" onClick={() => go('inbox')}><Icon name="inbox"/></button>
           <details className="profile-menu"><summary aria-label="Your profile"><span className="avatar">{me.full_name.split(' ').map(n => n[0]).slice(0,2).join('')}</span></summary><div><b>{me.full_name}</b><small>{me.email}</small><button onClick={clock}><Icon name="clock" size={15}/>{me.is_clocked_in ? 'Clock out' : 'Clock in'}</button><button onClick={()=>signOut().catch(e=>toast(errMsg(e)))}><Icon name="logout" size={15}/>Sign out</button></div></details>
         </header>
-        <div className="content">{pages[view]}</div>
+        <div className="content">{pages[me.mfa_required&&!me.mfa_enabled?'security':view==='reports'&&!['owner','admin','manager'].includes(me.role)?'operations':view]}</div>
       </section>
       {msg && <div className="toast" role="status">{msg}</div>}
     </div>
@@ -118,6 +122,7 @@ export function App() {
 
 function Auth({ onDone }: { onDone: () => void }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [challenge,setChallenge]=useState(''),[mfaCode,setMfaCode]=useState('');
   const [f, setF] = useState({ workspace: '', email: '', password: '', company: '', name: '' });
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -125,24 +130,27 @@ function Auth({ onDone }: { onDone: () => void }) {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault(); setErr(''); setBusy(true);
     try {
-      const r = mode === 'login'
-        ? await api<{ token: string }>('POST', '/auth/login', { workspace: f.workspace, email: f.email, password: f.password })
-        : await api<{ token: string }>('POST', '/auth/register', { company: f.company, slug: f.workspace, name: f.name, email: f.email, password: f.password });
-      setToken(r.token); onDone();
+      const r = challenge?await api<any>('POST','/auth/mfa/verify',{challenge,code:mfaCode}):mode === 'login'
+        ? await api<{ token?:string;mfaRequired?:boolean;challenge?:string }>('POST', '/auth/login', { workspace: f.workspace, email: f.email, password: f.password })
+        : await api<{ token?:string;mfaRequired?:boolean;challenge?:string }>('POST', '/auth/register', { company: f.company, slug: f.workspace, name: f.name, email: f.email, password: f.password });
+      if(r.mfaRequired){setChallenge(r.challenge!);return;}
+      setToken(r.token??null); onDone();
     } catch (e2) { setErr(errMsg(e2)); } finally { setBusy(false); }
   };
   return (
     <div className="auth"><section className="auth-story"><Brand/><div className="auth-story-content"><span className="eyebrow">YOUR NEXT CHAPTER IN REAL ESTATE</span><h2>Every lead.<br/>A new possibility.</h2><p>Bring your people, properties, and conversations together. Make time for the relationships that close deals.</p><div className="auth-proof"><Icon name="leads"/><span>One connected workspace for your entire team.</span></div><div className="auth-proof"><Icon name="shield"/><span>Your workspace. Your data. Your opportunities.</span></div></div><small>LeadVolt · Real estate, with momentum.</small></section><div className="auth-form-wrap"><form onSubmit={submit}><span className="eyebrow">LET’S GET TO WORK</span>
-      <h1>{mode === 'login' ? 'Sign in to LeadVolt' : 'Create your workspace'}</h1>
-      {mode === 'register' && <>
+      <h1>{challenge?'Verify your sign-in':mode === 'login' ? 'Sign in to LeadVolt' : 'Create your workspace'}</h1>
+      {!challenge&&<>{mode === 'register' && <>
         <div className="field"><label htmlFor="company">Company</label><input id="company" className="in" required value={f.company} onChange={set('company')} /></div>
         <div className="field"><label htmlFor="name">Your name</label><input id="name" className="in" required value={f.name} onChange={set('name')} /></div></>}
       <div className="field"><label htmlFor="ws">Workspace</label><input id="ws" className="in" required placeholder="e.g. demo" value={f.workspace} onChange={set('workspace')} /></div>
       <div className="field"><label htmlFor="email">Email</label><input id="email" className="in" type="email" required value={f.email} onChange={set('email')} /></div>
       <div className="field"><label htmlFor="pw">Password</label><input id="pw" className="in" type="password" required minLength={mode === 'register' ? 12 : 1} value={f.password} onChange={set('password')} /></div>
-      {err && <div className="err">{err}</div>}
-      <button className="btn primary" type="submit" disabled={busy}>{busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create workspace'}</button>
-      <button type="button" className="btn ghost" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>{mode === 'login' ? 'New here? Create a workspace' : 'Have an account? Sign in'}</button>
+      </>}
+      {challenge&&<><p>Enter your authenticator code or an unused recovery code.</p><label className="field">Verification code<input className="in mono" aria-label="Sign-in verification code" autoComplete="one-time-code" value={mfaCode} onChange={e=>setMfaCode(e.target.value)} required/></label></>}
+      {err && <div role="alert" className="err">{err}</div>}
+      <button className="btn primary" type="submit" disabled={busy}>{busy ? 'Please wait…' : challenge?'Verify sign-in':mode === 'login' ? 'Sign in' : 'Create workspace'}</button>
+      <button type="button" className="btn ghost" onClick={() => {if(challenge){setChallenge('');setMfaCode('');setErr('');}else setMode(mode === 'login' ? 'register' : 'login');}}>{challenge?'Back to sign-in':mode === 'login' ? 'New here? Create a workspace' : 'Have an account? Sign in'}</button>
     </form><small className="auth-footnote">A focused workspace for better follow-ups.</small></div></div>
   );
 }

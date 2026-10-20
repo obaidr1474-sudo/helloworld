@@ -148,7 +148,7 @@ export async function createOrReenquire(tx: Tx, actor: Actor, input: LeadInput):
   if (!phone && !email) throw badRequest('A lead needs a phone number or an email address.');
   if (!input.name?.trim()) throw badRequest('A lead needs a name.');
   const source=input.source.trim().toLowerCase(), reference=normalizeReference(input.listingRef);
-  const listingMode=input.routingMode==='listing' || !!reference || (actor.role==='system' && PORTAL_SOURCES.has(source));
+  const listingMode=input.routingMode==='listing' || !!reference || PORTAL_SOURCES.has(source);
   const key=input.opportunityKey??(reference?`${source}:${reference}`:listingMode?`${source}:missing:${input.providerEventId??crypto.randomUUID()}`:'');
   const route=listingMode&&reference?await ensureListingRoute(tx,tenantId,source,reference):null;
   const decision=route?routeDecision(route):{ownerId:null,status:'missing_reference',reason:'The portal enquiry did not include a listing reference'};
@@ -262,6 +262,11 @@ export async function applyDisposition(tx: Tx, actor: Actor, leadId: string, req
   if(err||!d)throw badRequest(err??'Invalid status');
   if(expectedVersion===undefined)throw new HttpError(428,'version_required','Send the current lead version in If-Match before updating its status.');
 
+  const booking=(await tx.query('SELECT * FROM deals WHERE tenant_id=$1 AND lead_id=$2 AND voided_at IS NULL FOR UPDATE',[tenantId,leadId])).rows[0];
+  if(booking&&booking.status!=='pending_approval'){
+    if(d.stage==='lost')throw conflict('Cancel this reviewed booking through Booking review before closing the lead.');
+    if(d.requiresDealValue&&(Number(req.dealValue)!==Number(booking.deal_value)||(req.propertyId&&req.propertyId!==booking.property_id)))throw conflict('Approved booking financial details cannot be changed through a lead status update.');
+  }
   const nextAt = d.requiresNextAction || (d.allowsNextAction && req.nextActionAt) ? new Date(req.nextActionAt!) : null;
   const prop = req.propertyId ? (await tx.query(`SELECT id, project_name FROM properties WHERE tenant_id = $1 AND id = $2`, [tenantId, req.propertyId])).rows[0] : null;
 
@@ -296,9 +301,9 @@ export async function applyDisposition(tx: Tx, actor: Actor, leadId: string, req
     }
   }
   if (d.stage==='lost' && lead.stage==='booked') await tx.query(`UPDATE deals SET voided_at=now(),status='cancelled' WHERE tenant_id=$1 AND lead_id=$2 AND voided_at IS NULL`,[tenantId,leadId]);
-  if (d.requiresDealValue) {
+  if (d.requiresDealValue&&(!booking||booking.status==='pending_approval')) {
     await tx.query(`INSERT INTO deals (tenant_id, lead_id, property_id, agent_id, deal_value) VALUES ($1,$2,$3,$4,$5)
-      ON CONFLICT(tenant_id,lead_id) WHERE voided_at IS NULL DO UPDATE SET property_id=EXCLUDED.property_id,agent_id=EXCLUDED.agent_id,deal_value=EXCLUDED.deal_value`,
+      ON CONFLICT(tenant_id,lead_id) WHERE voided_at IS NULL DO UPDATE SET property_id=EXCLUDED.property_id,agent_id=EXCLUDED.agent_id,deal_value=EXCLUDED.deal_value,version=deals.version+1,updated_at=now()`,
       [tenantId, leadId, prop?.id ?? lead.property_id, ownerAfter ?? actor.id, req.dealValue]);
     await emit(tx, tenantId, 'deal.booked', { lead_id: leadId, owner_id: ownerAfter, deal_value: req.dealValue });
   }

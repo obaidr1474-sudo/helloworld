@@ -4,6 +4,10 @@ Real estate CRM with listing ownership routing, an administrator exception queue
 
 Read the [business workflow and validation report](docs/BUSINESS_UPGRADE.md), [operator runbook](docs/OPERATIONS.md), and [integration contract](docs/INTEGRATIONS.md). The original [engineering blueprint](docs/LeadVolt_Engineering_Blueprint.md) is a roadmap, not a list of delivered capabilities.
 
+## Company controls upgrade
+
+This version adds authenticator-based two-factor sign-in, recovery codes, session revocation, staff MFA policies, personal/shared lead views, management reports and portal receipt reconciliation. Booking review and finance-reference tracking APIs are implemented; their dedicated user interface remains pending. Read [NEXT_SESSION.md](NEXT_SESSION.md) for the exact handover and remaining work.
+
 ## What happens to an enquiry
 
 1. Intake verifies the signature and records a stable delivery ID. Provider retries return the original result.
@@ -52,9 +56,10 @@ python -m pip install -r scripts/requirements-browser.txt
 python -m playwright install chromium
 python scripts/browser_smoke.py
 python scripts/browser_routing.py
+python scripts/browser_company.py
 ```
 
-Set `CHROMIUM_PATH` for a system Chromium or `LEADVOLT_URL` for a different allowed origin. The GitHub Actions workflow checks builds, the database suite, dependency advisories, and both browser scripts.
+Set `CHROMIUM_PATH` for a system Chromium or `LEADVOLT_URL` for a different allowed origin. The GitHub Actions workflow checks builds, the database suite, dependency advisories, and the browser scripts.
 
 ## Source layout
 
@@ -69,4 +74,4 @@ Set `CHROMIUM_PATH` for a system Chromium or `LEADVOLT_URL` for a different allo
 
 ## Deployment scope
 
-The app has been tested using fictional data, local PostgreSQL and local production containers. It has not been deployed to your company, connected to your live Bayut feed, or certified as enterprise ready. Bayut's actual delivery method, credentials and payload remain to be confirmed by your admin. Native email ingestion, telephony, SSO/MFA, Arabic/RTL and a native mobile app are not implemented. A price target does not establish readiness; the runbook defines the remaining live acceptance work.
+The app has been tested using fictional data, local PostgreSQL and local production containers. It has not been deployed to your company, connected to your live Bayut feed, or certified as enterprise ready. Bayut's actual delivery method, credentials and payload remain to be confirmed by your admin. Native email ingestion, telephony, SSO, Arabic/RTL and a native mobile app are not implemented. A price target does not establish readiness; the runbook defines the remaining live acceptance work.

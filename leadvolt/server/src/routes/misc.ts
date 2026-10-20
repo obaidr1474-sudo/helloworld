@@ -19,7 +19,7 @@ const propertySchema = z.object({
   reference: z.string().optional(), projectName: z.string().min(1), developer: z.string().optional(), community: z.string().min(1),
   subCommunity: z.string().optional(), offeringType: z.enum(['ready', 'off_plan']), purpose: z.enum(['sale', 'rent']).optional(),
   propertyType: z.string().min(1), beds: z.number().int().min(0), baths: z.number().int().min(0).optional(), areaSqft:z.number().finite().min(0).max(1e9).optional(),
-  price:z.number().finite().positive().max(1e12), handover: z.string().optional(), status: z.enum(['available', 'reserved', 'sold', 'rented', 'off_market']).optional(),
+  price:z.number().finite().positive().max(999_999_999_999.99).multipleOf(0.01), handover: z.string().optional(), status: z.enum(['available', 'reserved', 'sold', 'rented', 'off_market']).optional(),
   permitNumber: z.string().optional(), brochureUrl:z.string().url().refine(v=>/^https?:\/\//i.test(v),'Use an HTTP or HTTPS URL.').optional().or(z.literal('')), notes: z.string().optional(),
   portalRefs: z.record(z.string()).optional(),
 });
@@ -175,17 +175,18 @@ export async function appRoutes(app: FastifyInstance) {
     const verified=t&&(timestamp?verifyIntakeV2(t.intake_secret,req.rawBody??'',source??adapter,timestamp,signature):config.allowLegacyIntake&&verifyIntake(t.intake_secret,req.rawBody??'',signature));
     if(!verified) throw new HttpError(401,'invalid_signature','Unknown workspace, stale delivery timestamp or bad signature.');
     let input:ReturnType<typeof normalizeIntake>|undefined;
+    let eventId:string|undefined;
     try {
       parse(z.record(z.unknown()),req.body);
       input=normalizeIntake(adapter,source,req.body,t.settings?.intake_field_maps?.[source??adapter]);
-      const eventId=input.providerEventId??(req.headers['x-leadvolt-event-id'] as string|undefined);
+      eventId=input.providerEventId??(req.headers['x-leadvolt-event-id'] as string|undefined);
       if(config.production&&adapter==='portal'&&!input.providerEventId) throw badRequest('Include a stable provider event ID inside the signed portal payload.');
       const hash=crypto.createHash('sha256').update(req.rawBody??'').digest('hex');
       const r=await withTenant(t.id,tx=>receiveEnquiry(tx,{id:null,tenantId:t.id,role:'system'},input!,adapter,eventId,hash));
       reply.code(r.created?201:200);
       return {leadId:r.lead.id,serialNo:r.lead.serialNo,created:r.created,reenquiry:r.reenquiry,ownerId:r.lead.ownerId,duplicate:r.duplicate,routingStatus:r.lead.routingStatus};
     } catch(error) {
-      await withTenant(t.id,tx=>tx.query(`INSERT INTO integration_events(tenant_id,source,adapter,status,listing_ref,error_code,summary) VALUES($1,$2,$3,'rejected',$4,$5,$6)`,[t.id,source??adapter,adapter,input?.listingRef??null,error instanceof HttpError?error.code:'processing_error',error instanceof HttpError?error.message.slice(0,300):'Enquiry processing failed; sender should retry after correction']));
+      await withTenant(t.id,tx=>tx.query(`INSERT INTO integration_events(tenant_id,source,adapter,status,listing_ref,error_code,summary,provider_event_id) VALUES($1,$2,$3,'rejected',$4,$5,$6,$7)`,[t.id,source??adapter,adapter,input?.listingRef??null,error instanceof HttpError?error.code:'processing_error',error instanceof HttpError?error.message.slice(0,300):'Enquiry processing failed; sender should retry after correction',eventId?.slice(0,200)??null]));
       throw error;
     }
   });

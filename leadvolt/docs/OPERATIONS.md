@@ -20,7 +20,7 @@ For an existing development Docker volume created before this upgrade, create `l
 
 ## Production configuration and startup
 
-Create an operator-only environment file outside version control. Required values are `DATABASE_URL`, `WORKER_DATABASE_URL`, `MIGRATION_DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGIN` and `PUBLIC_BASE_URL`. Generate a unique random JWT secret of at least 32 characters. Database URLs must use the correct roles, strong unique passwords, and your database provider's verified TLS settings. Do not disable certificate checks. The production Compose file passes the owner URI only to its migration job.
+Create an operator-only environment file outside version control. Required values are `DATABASE_URL`, `WORKER_DATABASE_URL`, `MIGRATION_DATABASE_URL`, `JWT_SECRET`, `AUTH_ENCRYPTION_KEY`, `CORS_ORIGIN` and `PUBLIC_BASE_URL`. Generate a unique random JWT secret of at least 32 characters. Generate a separate persistent MFA encryption key with `openssl rand -base64 32` and put it in AUTH_ENCRYPTION_KEY. Keep this key in your secret manager and recovery backups: losing it prevents existing authenticator secrets from being decrypted. Do not rotate it without a credential re-encryption procedure. Database URLs must use the correct roles, strong unique passwords, and your database provider's verified TLS settings. Do not disable certificate checks. The production Compose file passes the owner URI only to its migration job.
 
 Both public URL settings must use your exact HTTPS CRM origin, for example `https://crm.your-company.example`. Public registration is disabled by production Compose. Configure a TLS reverse proxy to the web service's loopback port 8080 and permit websocket upgrades on `/ws`. Keep the API and PostgreSQL on private networks. Configure request logs, database logs and secrets according to your company's retention policy.
 
@@ -37,7 +37,7 @@ Migrations take a database advisory lock, apply each new file transactionally an
 
 Bootstrap the first workspace with the operator-only `server/dist/bootstrap.js` CLI. Export `BOOTSTRAP_COMPANY`, `BOOTSTRAP_SLUG`, `BOOTSTRAP_OWNER_NAME`, `BOOTSTRAP_OWNER_EMAIL` and a strong `BOOTSTRAP_OWNER_PASSWORD` in the operator shell, then pass those variable names with `docker compose exec -e NAME` to `server node dist/bootstrap.js`. The command creates the workspace and owner atomically and does not print credentials. Remove the bootstrap password from the shell/secret context afterward. Do not enable public registration merely to create the owner.
 
-The browser uses HttpOnly Secure cookies in production; access the public site over HTTPS. Company-wide SSO/MFA and password recovery UI are not implemented. Administrative password/role changes revoke sessions; use a controlled administrator or external identity workstream to address your company's authentication requirements before a broad rollout.
+The browser uses HttpOnly Secure cookies in production; access the public site over HTTPS. Authenticator MFA, recovery codes, revocable sessions and workspace role policies are implemented under Account security. Company-wide SSO and a forgotten-password recovery UI are not implemented. Administrative password/role changes revoke sessions; use a controlled administrator or external identity workstream to address your company's authentication requirements before a broad rollout.
 
 ## Health, monitoring and routine admin work
 
@@ -83,3 +83,10 @@ For a managed database, set `RESTORE_DATABASE_URL` instead of `DB_CONTAINER`, pl
 The report records the tests actually run. A company rollout still requires a staged acceptance exercise using your real provider method and approved sample enquiries: licensed publisher/different responsible agent, no-BRN agent, unmapped reference, missing reference, disabled owner, provider retries, simultaneous admin changes, and daily reporting across midnight. Reconcile upstream and CRM counts, verify data import and representative volume, confirm access with every business role, complete security review and rehearse recovery on your hosting platform.
 
 The implementation and test evidence support review and a staged pilot. They do not establish a per-user price, LeadRat feature parity, independent penetration testing, or an enterprise SLA.
+
+
+## Company controls release
+
+Migrations 006–009 invalidate old untracked sessions, introduce encrypted MFA credentials and revocable sessions, saved-view versions, reconciliation snapshots, stage-entry tracking and reviewed-booking protection. Staff sign in again after upgrade. Admins can require MFA by role only after enabling their own MFA. Recovery codes are shown once and each is usable once; regenerated codes invalidate prior ones. No administrator bypass for a lost authenticator is included. Retain recovery codes securely. Session activity timestamps update at most every five minutes. Expired challenges are removed after a day and expired sessions after 90 days by an hourly worker.
+
+Booking APIs record approvals and external finance references. They do not issue legal invoices, transfer money, integrate a bank, or reverse paid transactions. The booking UI and company-specific approval policy are pending; do not present this API layer as a completed accounting product.

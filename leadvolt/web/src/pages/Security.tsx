@@ -1,0 +1,49 @@
+import {useEffect,useState} from 'react';
+import {api} from '../lib/api';
+import {dt} from '../lib/format';
+import {errMsg,toast,type Me} from '../App';
+import {Icon} from '../components/Icon';
+import {Modal} from './Leads';
+
+export function Security({me,reloadMe}:{me:Me;reloadMe:()=>void}){
+ const admin=['owner','admin'].includes(me.role);
+ const [account,setAccount]=useState<any>(null),[sessions,setSessions]=useState<any[]>([]),[team,setTeam]=useState<any[]>([]),[policy,setPolicy]=useState<any>(null);
+ const [error,setError]=useState(''),[busy,setBusy]=useState(false),[setup,setSetup]=useState<any>(null),[codes,setCodes]=useState<string[]|null>(null),[action,setAction]=useState<string|null>(null);
+ const [password,setPassword]=useState(''),[code,setCode]=useState(''),[newPassword,setNewPassword]=useState('');
+ const load=async()=>{try{const [a,s]=await Promise.all([api('GET','/security/account'),api('GET','/security/sessions')]);setAccount(a);setSessions(s);if(admin){const [p,t]=await Promise.all([api('GET','/security/policy'),api('GET','/security/team')]);setPolicy(p);setTeam(t);}setError('');}catch(e){setError(errMsg(e));}};
+ useEffect(()=>{load();},[]);
+ const open=(name:string)=>{setAction(name);setPassword('');setCode('');setError('');};
+ const execute=async()=>{
+  if(busy)return;setBusy(true);setError('');
+  try{
+   if(action==='setup'){const r=await api('POST','/security/mfa/setup',{password});setSetup(r);setAction('confirm');setPassword('');}
+   else if(action==='confirm'){const r=await api('POST','/security/mfa/confirm',{code});setSetup(null);setCodes(r.recoveryCodes);setAction(null);reloadMe();await load();toast('Two-factor authentication enabled');}
+   else if(action==='disable'){await api('POST','/security/mfa/disable',{password,code});setAction(null);reloadMe();await load();toast('Two-factor authentication disabled');}
+   else if(action==='recovery'){const r=await api('POST','/security/mfa/recovery-codes',{password,code});setCodes(r.recoveryCodes);setAction(null);await load();}
+   else if(action==='policy'){await api('PUT','/security/policy',{version:policy.version,requiredRoles:policy.required_roles,password,code});setAction(null);await load();reloadMe();toast('Workspace security policy saved');}
+   else if(action==='password'){await api('POST','/security/password',{currentPassword:password,newPassword,code:code||undefined});setNewPassword('');setAction(null);await load();toast('Password changed. Other sessions have ended.');}
+   setCode('');setPassword('');
+  }catch(e){setError(errMsg(e));}finally{setBusy(false);}
+ };
+ const revoke=async(session:any)=>{try{await api('DELETE','/security/sessions/'+session.id);if(session.current)location.reload();else{load();toast('Session revoked');}}catch(e){setError(errMsg(e));}};
+ return <div className="pad security-page">
+  <div className="page-heading"><div><span className="eyebrow">ACCOUNT & WORKSPACE PROTECTION</span><h1>Account security</h1><p>Protect your sign-in, manage devices and control access to company data.</p></div><span className={`pill ${account?.mfa_enabled?'good':'bad'}`}><Icon name="shield" size={14}/>{account?.mfa_enabled?'Two-factor enabled':'Two-factor not enabled'}</span></div>
+  {me.mfa_required&&!account?.mfa_enabled&&<div className="operation-explainer"><Icon name="shield"/><div><b>Your company requires two-factor authentication.</b><p>Set it up below to access leads and other workspace tools.</p></div></div>}
+  {error&&!action&&<p role="alert" className="err">{error}</p>}
+  <div className="security-grid">
+   <section className="card"><div className="hd"><h2>Two-factor authentication</h2><Icon name="shield"/></div><div className="bd"><p>Use an authenticator app for an additional sign-in code. Keep recovery codes somewhere secure in case you lose your device.</p>{account?.mfa_enabled?<><p><b>{account.recovery_codes_remaining}</b> unused recovery codes</p><div className="row-actions"><button className="btn" onClick={()=>open('recovery')}>Replace recovery codes</button>{!me.mfa_required&&<button className="btn" onClick={()=>open('disable')}>Disable two-factor</button>}</div></>:<button className="btn primary" onClick={()=>open('setup')}>Set up two-factor</button>}</div></section>
+   <section className="card"><div className="hd"><h2>Password</h2><Icon name="shield"/></div><div className="bd"><p>Use a unique password of at least 12 characters. Changing it ends your other sessions.</p><button className="btn" onClick={()=>open('password')}>Change password</button></div></section>
+  </div>
+  <section className="card"><div className="hd"><h2>Your active sessions <span className="pill">{sessions.length}</span></h2><button className="btn sm" onClick={load}>Refresh sessions</button></div><div className="tbl-wrap"><table className="tbl"><thead><tr><th>Device / browser</th><th>Signed in</th><th>Last active</th><th>Expires</th><th/></tr></thead><tbody>{sessions.map(s=><tr key={s.id}><td><b>{s.current?'This device':'Other device'}</b><small>{s.user_agent||'API client'} · {s.ip_address}</small></td><td>{dt(s.created_at)}<small>{s.mfa_verified?'Two-factor verified':'Password verified'}</small></td><td>{dt(s.last_seen_at)}</td><td>{dt(s.expires_at)}</td><td><button className="btn sm" onClick={()=>revoke(s)}>{s.current?'Sign out this device':'Revoke session'}</button></td></tr>)}</tbody></table></div></section>
+  {admin&&policy&&<section className="card"><div className="hd"><h2>Workspace security policy</h2><span className="pill">Administrator</span></div><div className="bd"><p>Require two-factor authentication for selected roles. Staff without it will be directed to enrollment before they can access company data.</p><div className="policy-roles">{['owner','admin','manager','agent','listing_manager','viewer'].map(role=><label className="switch" key={role}><input type="checkbox" checked={policy.required_roles.includes(role)} onChange={e=>setPolicy({...policy,required_roles:e.target.checked?[...policy.required_roles,role]:policy.required_roles.filter((r:string)=>r!==role)})}/>{role.replace('_',' ')}</label>)}</div><button className="btn primary" disabled={!account?.mfa_enabled} onClick={()=>open('policy')}>Save security policy</button>{!account?.mfa_enabled&&<p className="muted">Enable your own two-factor authentication before changing this policy.</p>}</div></section>}
+  {admin&&<section className="card"><div className="hd"><h2>Team sign-in protection</h2></div><div className="tbl-wrap"><table className="tbl"><thead><tr><th>Person</th><th>Role</th><th>Two-factor</th><th>Active sessions</th><th/></tr></thead><tbody>{team.map(u=><tr key={u.id}><td><b>{u.full_name}</b><small>{u.email}{!u.is_active?' · Inactive':''}</small></td><td>{u.role}</td><td><span className={`pill ${u.mfa_enabled?'good':'bad'}`}>{u.mfa_enabled?'Enabled':'Not enabled'}</span></td><td>{u.active_sessions}</td><td>{(u.role!=='owner'||me.role==='owner')&&<button className="btn sm" onClick={async()=>{try{await api('POST',`/security/team/${u.id}/revoke`,{});if(u.id===me.id)location.reload();else{load();toast('Team member sessions revoked');}}catch(e){setError(errMsg(e));}}}>Revoke all sessions</button>}</td></tr>)}</tbody></table></div></section>}
+  {action&&<Modal title={action==='setup'?'Set up two-factor':action==='confirm'?'Verify your authenticator':action==='password'?'Change password':action==='policy'?'Confirm workspace security policy':action==='disable'?'Disable two-factor':'Replace recovery codes'} onClose={()=>{setAction(null);setSetup(null);setError('');}} footer={<><button className="btn" disabled={busy} onClick={()=>{setAction(null);setSetup(null);setError('');}}>Cancel</button><button className="btn primary" disabled={busy} onClick={execute}>{busy?'Saving…':action==='setup'?'Continue':action==='confirm'?'Verify & enable':'Confirm'}</button></>}>
+   {setup&&<div className="mfa-enrollment"><img src={setup.qrDataUrl} alt="Scan this QR code with your authenticator app"/><p>Scan with your authenticator, or enter this setup key manually.</p><input aria-label="Authenticator setup key" className="in mono" value={setup.secret} readOnly/><p>Enter the six-digit code from the app to finish.</p></div>}
+   {action!=='confirm'&&<label className="field">Current password<input className="in" aria-label="Current password" type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)}/></label>}
+   {action==='password'&&<label className="field">New password<input className="in" aria-label="New password" type="password" autoComplete="new-password" minLength={12} value={newPassword} onChange={e=>setNewPassword(e.target.value)}/></label>}
+   {(action==='confirm'||action==='disable'||action==='recovery'||action==='policy'||(action==='password'&&account?.mfa_enabled))&&<label className="field">Authenticator or recovery code<input className="in mono" aria-label="Security verification code" autoComplete="one-time-code" value={code} onChange={e=>setCode(e.target.value)}/><small>Use a fresh code. Each authenticator code can be accepted only once.</small></label>}
+   {error&&<p role="alert" className="err">{error}</p>}
+  </Modal>}
+  {codes&&<Modal title="Save your recovery codes" onClose={()=>setCodes(null)} footer={<button className="btn primary" onClick={()=>setCodes(null)}>I have saved these codes</button>}><p>These codes are shown once. Each can be used once instead of an authenticator code. Store them in your password manager or another secure place.</p><pre className="recovery-codes" aria-label="Recovery codes">{codes.join('\n')}</pre><button className="btn" onClick={()=>navigator.clipboard.writeText(codes.join('\n')).then(()=>toast('Recovery codes copied')).catch(()=>toast('Select and copy the codes manually'))}>Copy recovery codes</button></Modal>}
+ </div>;
+}

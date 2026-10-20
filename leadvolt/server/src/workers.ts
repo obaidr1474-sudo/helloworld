@@ -43,6 +43,7 @@ export async function runSlaSweep(log?: FastifyBaseLogger) {
 
 export function startWorkers(intervalMs: number, log: FastifyBaseLogger) {
   const timer = setInterval(() => runSlaSweep(log).catch((err) => log.error({ err }, 'sla sweep failed')), intervalMs);
+  const cleanup=setInterval(()=>withSystem(async tx=>{await tx.query("DELETE FROM auth_challenges WHERE expires_at<now()-interval '1 day'");await tx.query("DELETE FROM auth_sessions WHERE expires_at<now()-interval '90 days'");}).catch(err=>log.error({err},'session cleanup failed')),3600000);
   let sending=false;const deliveries=setInterval(()=>{if(sending)return;sending=true;dispatchQueuedMessages().catch(err=>log.error({err},'message delivery worker failed')).finally(()=>{sending=false;});},2000);
-  return ()=>{clearInterval(timer);clearInterval(deliveries);};
+  return ()=>{clearInterval(timer);clearInterval(deliveries);clearInterval(cleanup);};
 }

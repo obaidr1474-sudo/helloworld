@@ -8,6 +8,9 @@ import jwt from '@fastify/jwt';
 import { ZodError } from 'zod';
 import { config } from './lib/config.js';
 import { HttpError } from './lib/errors.js';
+import {dealRoutes} from './routes/deals.js';
+import {workspaceRoutes} from './routes/workspace.js';
+import {securityRoutes} from './routes/security.js';
 import { authRoutes } from './routes/auth.js';
 import { leadRoutes } from './routes/leads.js';
 import { appRoutes } from './routes/misc.js';
@@ -46,6 +49,9 @@ export async function buildApp(opts: { logger?: boolean } = {}) {
   app.get('/readyz',async(_req,reply)=>{try{await pool.query('SELECT 1');return {ok:true,database:'connected'};}catch{return reply.code(503).send({ok:false,database:'unavailable'});}});
   await app.register(async (api) => {
     await api.register(authRoutes);
+    await api.register(securityRoutes);
+    await api.register(workspaceRoutes);
+    await api.register(dealRoutes);
     await api.register(leadRoutes);
     await api.register(appRoutes);
     await api.register(operationRoutes);

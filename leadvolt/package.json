@@ -13,7 +13,7 @@
     "migrate": "npm run migrate -w server",
     "seed": "npm run seed -w server",
     "test:integration": "node scripts/test-database.mjs",
-    "test:unit": "npm test -w server -- --exclude test/api.test.ts --exclude test/business.test.ts --exclude test/delivery.test.ts"
+    "test:unit": "npm test -w server -- --exclude test/api.test.ts --exclude test/business.test.ts --exclude test/delivery.test.ts --exclude test/company.test.ts"
   },
   "engines": {
     "node": ">=24"

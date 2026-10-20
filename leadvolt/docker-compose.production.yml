@@ -28,6 +28,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set the non-owner runtime database URL}
       WORKER_DATABASE_URL: ${WORKER_DATABASE_URL:?Set the dedicated worker database URL}
       JWT_SECRET: ${JWT_SECRET:?Set a unique strong JWT secret}
+      AUTH_ENCRYPTION_KEY: ${AUTH_ENCRYPTION_KEY:?Set a base64 32-byte MFA encryption key}
       CORS_ORIGIN: ${CORS_ORIGIN:?Set the exact HTTPS CRM origin}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set the public HTTPS CRM URL}
       ALLOW_PUBLIC_REGISTRATION: "false"

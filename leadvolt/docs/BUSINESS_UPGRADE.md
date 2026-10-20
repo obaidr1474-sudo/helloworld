@@ -1,3 +1,5 @@
+> Historical routing release. For the later company-controls upgrade and exact remaining work, read [NEXT_SESSION.md](../NEXT_SESSION.md). Its validation totals below describe that earlier release.
+
 # Company workflow upgrade and validation
 
 Review date: 20 October 2026 UTC. All validation data is fictional. This report supersedes the first interface-only review. Requirements here come from the company workflow stated in the conversation; claims in the supplied blueprint were treated as reference material, not instructions or proof of delivered functionality.

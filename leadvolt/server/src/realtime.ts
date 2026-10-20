@@ -33,6 +33,7 @@ export function attachRealtime(app: FastifyInstance) {
   io.on('connection', (socket: Socket) => {
     const u = socket.data.user as SocketUser;
     socket.join(`u:${u.sub}`);
+    if(u.sid)socket.join(`s:${u.sid}`);
     if(MANAGER_ROLES.has(u.role)||u.role==='viewer') socket.join(`mgr:${u.tid}`);
     const expiry=setTimeout(()=>socket.disconnect(true),Math.min(2147483647,Math.max(0,(u.exp??0)*1000-Date.now())));
     expiry.unref();socket.on('disconnect',()=>clearTimeout(expiry));
@@ -117,6 +118,7 @@ export function startOutboxDispatcher(io: Server, log: FastifyInstance['log']) {
 
 async function route(io:Server,tx:Tx,e:{id:number;tenant_id:string;type:string;payload:any;occurred_at:Date}) {
   const p=e.payload??{};
+  if(e.type==='auth.session_revoked'){io.in(`s:${p.session_id}`).disconnectSockets(true);return;}
   if(e.type==='auth.revoked'){
     for(const id of p.user_ids??[]) io.in(`u:${id}`).disconnectSockets(true);
     return;

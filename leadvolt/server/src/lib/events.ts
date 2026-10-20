@@ -1,10 +1,10 @@
 import type { Tx } from './db.js';
 
 export type DomainEventType =
-  | 'listing.mapping_changed' | 'routing.exception' | 'auth.revoked' | 'lead.created' | 'lead.updated' | 'lead.stage_changed' | 'lead.assigned' | 'lead.reenquired'
+  | 'listing.mapping_changed' | 'routing.exception' | 'auth.session_revoked' | 'auth.revoked' | 'lead.created' | 'lead.updated' | 'lead.stage_changed' | 'lead.assigned' | 'lead.reenquired'
   | 'interaction.created' | 'message.queued' | 'message.failed' | 'message.received' | 'message.updated' | 'message.sent' | 'task.created' | 'task.updated'
   | 'task.due_soon' | 'sla.breached' | 'property.created' | 'property.updated' | 'match.found'
-  | 'share_link.opened' | 'deal.booked' | 'attendance.changed';
+  | 'share_link.opened' | 'deal.updated' | 'deal.booked' | 'attendance.changed';
 
 export interface EventPayload {
   lead_id?: string;

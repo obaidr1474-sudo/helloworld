@@ -12,9 +12,10 @@ export async function api<T = any>(method: string, path: string, body?: unknown,
     headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(!['GET','HEAD','OPTIONS'].includes(method)?{'X-LeadVolt-CSRF':'1'}:{}), ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if(res.status===401&&!['/me','/auth/login','/auth/register'].includes(path)){setToken(null);window.dispatchEvent(new Event('lv:session-ended'));}
   if (res.status === 204) return undefined as T;
   const json = await res.json().catch(() => ({}));
+  if(res.status===401&&['unauthorized','session_revoked'].includes(json.error)&&!['/me','/auth/login','/auth/register'].includes(path)){setToken(null);window.dispatchEvent(new Event('lv:session-ended'));}
+  if(res.status===403&&json.error==='mfa_enrollment_required')window.dispatchEvent(new Event('lv:mfa-required'));
   if (!res.ok) throw new ApiError(res.status, json.error ?? 'error', json.message ?? 'Request failed', json.details);
   return json as T;
 }

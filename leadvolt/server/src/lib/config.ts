@@ -1,10 +1,13 @@
 import 'dotenv/config';
+import crypto from 'node:crypto';
 
 export function loadConfig(env:NodeJS.ProcessEnv) {
   const production=env.NODE_ENV==='production';
   const required=(name:string,fallback?:string)=>{const value=env[name]??fallback;if(!value) throw new Error(`${name} is required`);return value;};
   const jwtSecret=required('JWT_SECRET',production?undefined:'dev-only-change-me-dev-only-change-me');
   if (production&&(jwtSecret.length<32||/change-me|dev-only|password|^secret$/i.test(jwtSecret))) throw new Error('JWT_SECRET must be a strong, unique secret of at least 32 characters');
+  const authEncryptionKey=required('AUTH_ENCRYPTION_KEY',production?undefined:crypto.createHash('sha256').update('development-only-mfa-encryption-key').digest('base64'));
+  if(!/^[A-Za-z0-9+/]{43}=$/.test(authEncryptionKey)||Buffer.from(authEncryptionKey,'base64').length!==32)throw new Error('AUTH_ENCRYPTION_KEY must be a base64-encoded 32-byte key');
   const corsOrigin=required('CORS_ORIGIN',production?undefined:'http://localhost:5173').split(',').map(v=>v.trim()).filter(Boolean);
   if (corsOrigin.some(v=>{try {const u=new URL(v);return u.origin!==v||!['http:','https:'].includes(u.protocol)||(production&&u.protocol!=='https:');}catch{return true;}})) throw new Error('CORS_ORIGIN must contain exact allowed origins; production requires HTTPS');
   const publicBaseUrl=required('PUBLIC_BASE_URL',production?undefined:'http://localhost:5173').replace(/\/$/,'');
@@ -17,7 +20,7 @@ export function loadConfig(env:NodeJS.ProcessEnv) {
     databaseUrl:required('DATABASE_URL',production?undefined:'postgres://leadvolt_app:leadvolt_app@localhost:5432/leadvolt'),
     workerDatabaseUrl:required('WORKER_DATABASE_URL',production?undefined:'postgres://leadvolt_worker:leadvolt_worker@localhost:5432/leadvolt'),
     migrationUrl:env.MIGRATION_DATABASE_URL??env.DATABASE_URL??'postgres://leadvolt:leadvolt@localhost:5432/leadvolt',
-    jwtSecret,corsOrigin,publicBaseUrl,trustProxy:env.TRUST_PROXY?.split(',').map(v=>v.trim()).filter(Boolean)??false,
+    authEncryptionKey,jwtSecret,corsOrigin,publicBaseUrl,trustProxy:env.TRUST_PROXY?.split(',').map(v=>v.trim()).filter(Boolean)??false,
     allowRegistration:env.ALLOW_PUBLIC_REGISTRATION=== 'true'||(!production&&env.ALLOW_PUBLIC_REGISTRATION!=='false'),
     allowLegacyIntake:!production||env.ALLOW_LEGACY_INTAKE_SIGNATURES==='true',
     whatsapp:{verifyToken:env.WA_VERIFY_TOKEN??'',appSecret:env.WA_APP_SECRET??'',accessToken:env.WA_ACCESS_TOKEN??'',phoneNumberId:env.WA_PHONE_NUMBER_ID??'',workspace:env.WA_WORKSPACE??'',apiVersion:env.WA_API_VERSION??'v24.0'},

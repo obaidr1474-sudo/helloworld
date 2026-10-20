@@ -80,7 +80,7 @@ export async function leadRoutes(app: FastifyInstance) {
     const a = actorOf(req); const { id } = req.params as { id: string };
     const b = parse(z.object({
       disposition: z.string(), subStatus: z.string().optional(), nextActionAt: z.string().datetime({ offset: true }).nullable().optional(),
-      dealValue: z.number().positive().nullable().optional(), propertyId: z.string().uuid().nullable().optional(),
+      dealValue: z.number().positive().max(999_999_999_999.99).multipleOf(0.01).nullable().optional(), propertyId: z.string().uuid().nullable().optional(),
       note: z.string().max(5000).nullable().optional(), assignTo: z.string().uuid().nullable().optional(),
     }), req.body);
     const r = await withTenant(a.tenantId, (tx) => L.applyDisposition(tx, a, id, b, ifMatch(req)));

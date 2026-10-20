@@ -1,0 +1,16 @@
+{
+  "passed": 10,
+  "checks": [
+    "authenticator QR enrollment, invalid-code recovery and one-time recovery code presentation work",
+    "saved workspace lead views survive reloads and restore the real query",
+    "shared views preserve agent ownership and never reveal another agent\u2019s buyer",
+    "management reports show real call activity and export the filtered data",
+    "CSV reconciliation identifies received, rejected and missing enquiries while submitting only ID fields",
+    "workspace MFA policy revokes unenrolled staff sessions and gates lead access until enrollment",
+    "required authenticator enrollment restores normal agent workflows",
+    "password sign-in requires a second factor and an unused recovery code completes sign-in",
+    "device session revocation ends only the selected device",
+    "security and report screens fit a phone viewport"
+  ],
+  "page_errors": []
+}

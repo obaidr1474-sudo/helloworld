@@ -62,7 +62,7 @@ d('LeadVolt API', () => {
   });
 
   it('creates leads with round-robin allocation and catches duplicates as re-enquiries', async () => {
-    const mk = (name: string, phone: string) => call('POST', '/leads', tok.owner, { name, phone, source: 'bayut', subSource: 'Bayut WhatsApp',
+    const mk = (name: string, phone: string) => call('POST', '/leads', tok.owner, { name, phone, source: 'website', subSource: 'Website enquiry',
       requirements: { purpose: 'buy', offering: 'off_plan', types: ['Apartment'], beds: 2, budgetMin: 1_800_000, budgetMax: 2_300_000, communities: ['Dubai Hills Estate'] } });
     const r1 = await mk('Lead One', '050 111 1111'); const r2 = await mk('Lead Two', '0502222222');
     expect(r1.status).toBe(201); expect(r2.status).toBe(201);

@@ -1,0 +1,15 @@
+{
+  "fictionalWorkspace": "load-fixture-975e93be23",
+  "enquiries": 200,
+  "httpDeliveries": 400,
+  "concurrency": 20,
+  "providerRetries": 200,
+  "wrongOwnerOrFailedDelivery": 0,
+  "savedLeads": 200,
+  "agentLiveNotifications": 200,
+  "httpP50Ms": 195,
+  "httpP95Ms": 294,
+  "agentNotificationP95Ms": 296,
+  "elapsedMs": 2115,
+  "environment": "Local/staging fixture exercise; not a production capacity guarantee"
+}
